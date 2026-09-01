@@ -189,6 +189,9 @@ async function readCardImage(dataURL, onStep = () => {}) {
 
   const found = (result.punches || []).filter(isPunch);
   if (!found.length) {
+    if (result.raw) {
+      console.log("[punchcard] model returned no usable punches. finish:", result.finish, "raw:", result.raw);
+    }
     throw new Error("No stamped rows were read. Get closer, fill the frame, and keep glare off the card.");
   }
   return found;
@@ -203,6 +206,7 @@ export function TimeCard() {
   const [draft, setDraft] = useState({ date: todayISO(), time: nowHM() });
   const [status, setStatus] = useState("idle"); // idle | camera | reading
   const [readMsg, setReadMsg] = useState("");
+  const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState("");
   const [fresh, setFresh] = useState([]);
   const [showAll, setShowAll] = useState(false);
@@ -230,6 +234,16 @@ export function TimeCard() {
     if (!punches.length && !other) return;
     storage.set("timecard:v1", JSON.stringify({ punches, other }));
   }, [punches, other]);
+
+  useEffect(() => {
+    if (status !== "reading") {
+      setElapsed(0);
+      return;
+    }
+    const start = Date.now();
+    const id = setInterval(() => setElapsed(Math.round((Date.now() - start) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [status]);
 
   const grid = useMemo(() => layout(punches), [punches]);
   const { shifts, notes } = useMemo(() => readCard(grid), [grid]);
@@ -409,6 +423,7 @@ export function TimeCard() {
         <div class="stage">
           <div class="stagebar">
             <span>Reading the card…</span>
+            <span class="elapsed">${elapsed}s</span>
           </div>
           <div class="stagebody">
             <div class="frame">
@@ -416,8 +431,9 @@ export function TimeCard() {
               <div class="scan"></div>
             </div>
           </div>
-          <div class="shutterbar">
-            <span class="readnote">${readMsg || "Working…"}</span>
+          <div class="readpanel">
+            <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+            <p class="readnote">${readMsg || "Sending the photo…"}</p>
           </div>
         </div>
       `}

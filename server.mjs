@@ -182,15 +182,32 @@ async function readCardImage(image, mimeType, onEvent = () => {}) {
     const ms = Date.now() - t;
     console.log(`  ${model} ${status} ${ms}ms`);
     if (status === 200) {
-      const text = ((body.candidates && body.candidates[0] &&
-        body.candidates[0].content && body.candidates[0].content.parts) || [])
+      const cand = body.candidates && body.candidates[0];
+      const text = ((cand && cand.content && cand.content.parts) || [])
         .map((p) => p.text || "")
         .join("");
+      const finish = cand && cand.finishReason;
       preferredModel = model;
-      return { punches: punchesFromGeminiText(text), model };
+      let punches = [];
+      let parseErr = null;
+      try {
+        punches = punchesFromGeminiText(text);
+      } catch (e) {
+        parseErr = e.message;
+      }
+      if (!punches.length) {
+        console.log(
+          `  ${model} 200 ${ms}ms but 0 punches` +
+            (finish ? ` finish=${finish}` : "") +
+            (parseErr ? ` parseErr=${parseErr}` : "") +
+            ` raw=${JSON.stringify(text).slice(0, 500)}`
+        );
+      }
+      return { punches, model, raw: text, finish: finish || null };
     }
     lastErr = (body.error && body.error.message) || `HTTP ${status}`;
     lastBusy = shouldFallThrough(status, body);
+    console.log(`  fell_through ${model} ${status} ${ms}ms  ${JSON.stringify(lastErr).slice(0, 200)}`);
     onEvent("fell_through", { model, status, ms, busy: lastBusy });
     if (!lastBusy) {
       const e = new Error(lastErr);
@@ -280,9 +297,14 @@ async function handleRead(req, res) {
 
   const t0 = Date.now();
   try {
-    const { punches, model } = await readCardImage(clean.image, clean.mimeType, emit);
+    const { punches, model, raw, finish } = await readCardImage(clean.image, clean.mimeType, emit);
     console.log(`/api/read done  ${model}  ${punches.length} punches  ${Date.now() - t0}ms`);
-    emit("done", { punches, model });
+    const done = { punches, model };
+    if (!punches.length) {
+      done.finish = finish || null;
+      done.raw = String(raw || "").slice(0, 600); // what the model actually said
+    }
+    emit("done", done);
   } catch (e) {
     console.log(`/api/read error  ${Date.now() - t0}ms  ${e.message || e}`);
     emit("error", { error: e.message || String(e), busy: !!e.busy });
