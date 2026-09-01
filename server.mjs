@@ -103,10 +103,12 @@ export function punchesFromGeminiText(text) {
     let time = String((p && p.time) || "");
     const tm = /^(\d{1,2}):(\d{2})/.exec(time);
     if (tm) time = `${tm[1].padStart(2, "0")}:${tm[2]}`;
+    const conf = Number(p && p.confidence);
     const cand = {
       type: String((p && p.type) || "").toUpperCase(),
       date: String((p && p.date) || ""),
       time,
+      confidence: Number.isFinite(conf) ? Math.max(0, Math.min(1, conf)) : 1,
     };
     if (validPunch(cand)) out.push(cand);
   }
@@ -115,16 +117,18 @@ export function punchesFromGeminiText(text) {
 
 /* --------------------------------- gemini -------------------------------- */
 
-const PROMPT = `This photo shows a paper punch time card. Rows are labeled IN and OUT, alternating down the card. Some rows carry a machine-stamped date and time (for example "31 AUG '26 PM1:35"); the rest are blank or handwritten.
+const PROMPT = `This photo shows a paper punch time card. Rows are labeled IN and OUT, alternating down the card. Some rows carry a machine-stamped date and time (for example "31 AUG '26 PM1:35"); the rest are blank or handwritten. The stamps are faint dot-matrix print and may be light or slightly misaligned - read them anyway.
 
-Return ONLY a JSON object, with no markdown fences and no commentary:
-{"punches":[{"type":"IN","date":"2026-08-31","time":"13:35"}]}
+Return ONLY a JSON object, no markdown fences, no commentary:
+{"punches":[{"type":"IN","date":"2026-08-31","time":"13:35","confidence":0.9}]}
 
 Rules:
 - One entry per stamped row, top to bottom, in the order they appear.
 - "type" is that row's printed label: "IN" or "OUT".
 - "date" is YYYY-MM-DD. A stamp like 31 AUG '26 is 2026-08-31.
 - "time" is 24-hour HH:MM. PM1:35 is 13:35. AM12:05 is 00:05. PM12:40 is 12:40.
+- "confidence" is your certainty for that row, 0 to 1. Use a low value when the
+  stamp is faint, blurry, or partly cut off.
 - Ignore blank rows and anything handwritten.
 - If no row is stamped, return {"punches":[]}.`;
 
@@ -144,7 +148,11 @@ async function callGemini(model, image, mimeType) {
             ],
           },
         ],
-        generationConfig: { temperature: 0 },
+        generationConfig: {
+          temperature: 0,
+          maxOutputTokens: 2048,
+          responseMimeType: "application/json",
+        },
       }),
     });
     let body = {};
@@ -229,8 +237,12 @@ async function readCardImage(image, mimeType, onEvent = () => {}) {
 const MIME = {
   ".html": "text/html; charset=utf-8",
   ".mjs": "text/javascript; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".woff2": "font/woff2",
+  ".webmanifest": "application/manifest+json",
+  ".png": "image/png",
+  ".svg": "image/svg+xml",
 };
 
 /* Only these paths are served. Anything else (server.mjs, package.json, .env,
@@ -240,6 +252,8 @@ const STATIC_ALLOW = new Set([
   "app.mjs",
   "lib.mjs",
   "styles.css",
+  "sw.js",
+  "manifest.webmanifest",
   "vendor/preact.mjs",
   "vendor/hooks.mjs",
   "vendor/htm.mjs",
@@ -249,7 +263,15 @@ const STATIC_ALLOW = new Set([
   "fonts/zillaslab-500.woff2",
   "fonts/zillaslab-600.woff2",
   "fonts/zillaslab-700.woff2",
+  "icons/favicon.svg",
+  "icons/favicon-48.png",
+  "icons/icon-192.png",
+  "icons/icon-512.png",
+  "icons/icon-maskable-512.png",
 ]);
+
+/* Bare requests that map to a real allow-listed file. */
+const STATIC_ALIAS = { "favicon.ico": "icons/favicon-48.png" };
 
 const sendJson = (res, code, obj) => {
   res.writeHead(code, { "Content-Type": "application/json" });
@@ -320,7 +342,8 @@ export function staticTarget(urlPath) {
   } catch {
     return null;
   }
-  const rel = normalize(p === "/" ? "index.html" : p.replace(/^\/+/, "")).replace(/\\/g, "/");
+  let rel = normalize(p === "/" ? "index.html" : p.replace(/^\/+/, "")).replace(/\\/g, "/");
+  if (STATIC_ALIAS[rel]) rel = STATIC_ALIAS[rel];
   return STATIC_ALLOW.has(rel) ? rel : null;
 }
 
@@ -334,7 +357,8 @@ async function serveStatic(req, res) {
     const buf = await readFile(join(ROOT, rel));
     res.writeHead(200, {
       "Content-Type": MIME[extname(rel).toLowerCase()] || "application/octet-stream",
-      "Cache-Control": rel === "index.html" ? "no-cache" : "public, max-age=3600",
+      "Cache-Control":
+        rel === "index.html" || rel === "sw.js" ? "no-cache" : "public, max-age=3600",
     });
     res.end(req.method === "HEAD" ? undefined : buf);
   } catch {

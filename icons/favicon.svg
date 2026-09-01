@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="punchcard">
+  <rect width="32" height="32" rx="6" fill="#2B2E28"/>
+  <rect x="6" y="4" width="20" height="24" rx="3" fill="#EFE6D0"/>
+  <rect x="6" y="4" width="20" height="6" rx="3" fill="#565073"/>
+  <g stroke="#7A7263" stroke-width="2" stroke-linecap="round">
+    <line x1="10" y1="15" x2="22" y2="15"/>
+    <line x1="10" y1="20" x2="22" y2="20"/>
+    <line x1="10" y1="25" x2="22" y2="25"/>
+  </g>
+  <circle cx="21" cy="15" r="2.4" fill="#8C3B2E"/>
+</svg>

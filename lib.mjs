@@ -98,13 +98,29 @@ export function readCard(grid) {
       shifts.push({ slot: i, in: inP, out: null, minutes: 0, open: true });
       continue;
     }
-    const mins = minutesOf(outP) - minutesOf(inP);
+    let mins = minutesOf(outP) - minutesOf(inP);
+    let overnight = outP.date !== inP.date && mins >= 0;
     if (mins < 0) {
-      notes.push(`Line ${i + 2} punches out before the punch in above it.`);
-      shifts.push({ slot: i, in: inP, out: outP, minutes: 0, bad: true });
-    } else {
-      shifts.push({ slot: i, in: inP, out: outP, minutes: mins });
+      // Same-date OUT earlier than IN: probably an overnight shift the reader
+      // (or a hand entry) dated on the IN day. Roll the OUT forward a day if
+      // that yields a sane shift length.
+      const rolled = mins + 24 * 60;
+      if (rolled > 0 && rolled <= 16 * 60) {
+        mins = rolled;
+        overnight = true;
+      } else {
+        notes.push(`Line ${i + 2} punches out before the punch in above it.`);
+        shifts.push({ slot: i, in: inP, out: outP, minutes: 0, bad: true });
+        continue;
+      }
     }
+    shifts.push({
+      slot: i,
+      in: inP,
+      out: outP,
+      minutes: mins,
+      ...(overnight ? { overnight: true } : {}),
+    });
   }
   return { shifts, notes };
 }

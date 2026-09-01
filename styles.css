@@ -36,6 +36,7 @@ html,body{margin:0;padding:0;}
 .masthead{color:#D9D2BE;}
 .masthead h1{font-size:26px;font-weight:600;margin:0 0 4px;line-height:1.15;}
 .masthead p{margin:0;font-size:14px;line-height:1.5;color:#A9A493;max-width:34ch;}
+.masthead .ainote{margin-top:8px;font-size:12.5px;color:#C9A98E;border-left:2px solid #8C5B45;padding-left:8px;}
 
 .tiles{display:flex;gap:10px;margin:16px 0;}
 .tile{flex:1;min-width:0;text-align:left;background:#EFE6D0;border:0;border-top:5px solid var(--stamp);
@@ -73,6 +74,11 @@ html,body{margin:0;padding:0;}
 .dur{margin-left:auto;font-family:'Caveat',cursive;font-weight:700;font-size:18px;color:var(--pen);white-space:nowrap;}
 .dur.flag{color:var(--warn);}
 .hint{color:#9C9481;font-size:13px;font-style:italic;}
+.empty{color:#9C9481;font-size:13px;font-style:italic;padding:0 8px;}
+.punched.low{color:var(--warn);}
+.qmark{display:inline-block;margin-left:5px;font-family:'Zilla Slab',serif;font-weight:700;
+  color:var(--warn);border:1px solid var(--warn);border-radius:50%;width:15px;height:15px;
+  line-height:13px;text-align:center;font-size:11px;}
 .row.editing{background:#E5DBC2;}
 .editor{display:flex;gap:6px;padding:8px;align-items:center;flex-wrap:wrap;}
 .editor input{font-family:'DotGothic16',monospace;font-size:14px;padding:6px 7px;border:1px solid var(--rule);
@@ -81,8 +87,10 @@ html,body{margin:0;padding:0;}
   color:var(--print);text-decoration:underline;}
 .mini.go{color:var(--pen);}
 .mini.drop{color:var(--warn);}
-.more{width:100%;background:none;border:0;border-top:1px dashed var(--rule);padding:8px;
-  font:600 13px 'Zilla Slab',serif;color:#7A7263;cursor:pointer;}
+.add{width:100%;background:none;border:0;border-top:1px dashed var(--rule);padding:11px 8px;
+  font:600 14px 'Zilla Slab',serif;color:var(--pen);cursor:pointer;letter-spacing:.02em;}
+.add:focus-visible{outline:2px solid var(--stamp);outline-offset:-2px;}
+.uncertainnote{margin:10px 2px 0;font-size:13px;color:var(--warn);font-weight:600;}
 
 .totals{margin-top:18px;}
 .tline{display:flex;align-items:flex-end;gap:8px;font-weight:700;font-size:15px;margin-bottom:12px;}

@@ -8,7 +8,6 @@ import {
 } from "./vendor/hooks.mjs";
 import htmFactory from "./vendor/htm.mjs";
 import {
-  SLOTS,
   slotType,
   todayISO,
   nowHM,
@@ -83,6 +82,30 @@ function toCanvas(src, w, h, max) {
   return c;
 }
 
+/* Grayscale + a mild contrast lift so faint dot-matrix stamps read better.
+   Conservative on purpose - a good photo should come out barely changed. */
+function preprocess(canvas) {
+  const ctx = canvas.getContext("2d");
+  let img;
+  try {
+    img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  } catch (e) {
+    return canvas; // tainted canvas / not supported - send as-is
+  }
+  const d = img.data;
+  const C = 1.18;
+  for (let i = 0; i < d.length; i += 4) {
+    const g = d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
+    let v = (g - 128) * C + 132;
+    v = v < 0 ? 0 : v > 255 ? 255 : v;
+    d[i] = d[i + 1] = d[i + 2] = v;
+  }
+  ctx.putImageData(img, 0, 0);
+  return canvas;
+}
+
+const shotURL = (canvas) => preprocess(canvas).toDataURL("image/jpeg", 0.9);
+
 /* Three ways in, because iPhone photos arrive as HEIC and some webviews
    refuse blob: URLs. Returns a JPEG data URL, long edge capped so the upload
    to the reader stays small. */
@@ -92,7 +115,7 @@ async function loadShot(file) {
       const bmp = await createImageBitmap(file, { imageOrientation: "from-image" });
       const c = toCanvas(bmp, bmp.width, bmp.height, 1600);
       bmp.close?.();
-      return { src: c.toDataURL("image/jpeg", 0.9) };
+      return { src: shotURL(c) };
     } catch (e) { /* next route */ }
   }
   let dataURL = null;
@@ -100,14 +123,14 @@ async function loadShot(file) {
     dataURL = await asDataURL(file);
     const img = await asImage(dataURL);
     const c = toCanvas(img, img.naturalWidth || img.width, img.naturalHeight || img.height, 1600);
-    return { src: c.toDataURL("image/jpeg", 0.9) };
+    return { src: shotURL(c) };
   } catch (e) { /* next route */ }
   try {
     const url = URL.createObjectURL(file);
     const img = await asImage(url);
     const c = toCanvas(img, img.naturalWidth || img.width, img.naturalHeight || img.height, 1600);
     URL.revokeObjectURL(url);
-    return { src: c.toDataURL("image/jpeg", 0.9) };
+    return { src: shotURL(c) };
   } catch (e) { /* fall through */ }
 
   const type = (file.type || "").toLowerCase();
@@ -209,7 +232,6 @@ export function TimeCard() {
   const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState("");
   const [fresh, setFresh] = useState([]);
-  const [showAll, setShowAll] = useState(false);
   const [copied, setCopied] = useState(null);
   const [shot, setShot] = useState(null);
 
@@ -273,8 +295,11 @@ export function TimeCard() {
   const done = shifts.filter((s) => s.out && !s.bad);
   const last = done[done.length - 1];
 
-  const lastFilled = grid.reduce((n, p, i) => (p ? i : n), -1);
-  const visible = showAll ? SLOTS : Math.min(SLOTS, Math.max(6, lastFilled + 3));
+  /* Rows to show: every slot that holds a punch, plus a slot being edited. */
+  const rows = grid
+    .map((p, i) => ({ p, i }))
+    .filter(({ p, i }) => p || editing === i);
+  const uncertain = grid.filter((p) => p && p.confidence != null && p.confidence < 0.6).length;
 
   /* ------------------------------- clipboard ------------------------------ */
 
@@ -330,7 +355,7 @@ export function TimeCard() {
     if (!v || !v.videoWidth) return;
     const c = toCanvas(v, v.videoWidth, v.videoHeight, 1600);
     stopCamera();
-    await send({ src: c.toDataURL("image/jpeg", 0.9) });
+    await send({ src: shotURL(c) });
   }
 
   async function onFile(e) {
@@ -387,8 +412,15 @@ export function TimeCard() {
     setPunches(grid.filter((x, i) => x && i !== editing));
     setEditing(null);
   }
-  function punchNow(type) {
-    setPunches([...grid.filter(Boolean), { type, date: todayISO(), time: nowHM() }]);
+  function addPunch() {
+    const p = { type: open ? "OUT" : "IN", date: todayISO(), time: nowHM() };
+    const next = [...grid.filter(Boolean), p];
+    setPunches(next);
+    const idx = layout(next).indexOf(p);
+    if (idx >= 0) {
+      setDraft({ date: p.date, time: p.time });
+      setEditing(idx);
+    }
   }
   function clearCard() {
     setPunches([]);
@@ -442,6 +474,7 @@ export function TimeCard() {
         <div class="masthead">
           <h1>Time card</h1>
           <p>Point the camera at the card and the punches come across.</p>
+          <p class="ainote">An AI reads the photo, so it can misread a stamp — check every row against the card before you submit your hours.</p>
         </div>
 
         <div class="tiles">
@@ -478,9 +511,6 @@ export function TimeCard() {
         <div class="actions">
           <button class="btn key" onClick=${openCamera}>Use camera</button>
           <button class="btn" onClick=${() => library.current.click()}>Upload a photo</button>
-          <button class="btn" onClick=${() => punchNow(open ? "OUT" : "IN")}>
-            ${open ? "Punch out now" : "Punch in now"}
-          </button>
         </div>
         <input ref=${library} type="file" accept="image/*" onChange=${onFile} hidden />
         ${error && html`<div class="err">${error}</div>`}
@@ -492,10 +522,13 @@ export function TimeCard() {
           </div>
 
           <div class="grid">
-            ${Array.from({ length: visible }, (_, i) => {
-              const p = grid[i];
+            ${rows.length === 0 && editing === null && html`
+              <div class="row"><span class="empty">No punches yet — shoot the card or add one below.</span></div>
+            `}
+            ${rows.map(({ p, i }) => {
               const shift = shifts.find((s) => s.slot === (i % 2 === 0 ? i : i - 1));
               const showDur = i % 2 === 1 && shift && shift.out;
+              const low = p && p.confidence != null && p.confidence < 0.6;
               return html`
                 <div key=${i} class=${`row${editing === i ? " editing" : ""}`}>
                   <div class="lab">${slotType(i)}</div>
@@ -507,15 +540,15 @@ export function TimeCard() {
                           <input type="time" value=${draft.time} aria-label="Time"
                             onInput=${(e) => setDraft({ ...draft, time: e.target.value })} />
                           <button class="mini go" onClick=${saveRow}>Save</button>
-                          ${p && html`<button class="mini drop" onClick=${clearRow}>Erase</button>`}
+                          <button class="mini drop" onClick=${clearRow}>Remove</button>
                           <button class="mini" onClick=${() => setEditing(null)}>Cancel</button>
                         </div>
                       `
                     : html`
                         <button class="val" onClick=${() => openRow(i)}>
-                          ${p
-                            ? html`<span class=${`punched${fresh.includes(i) ? " ink" : ""}`}>${stamp(p)}</span>`
-                            : html`<span class="hint">tap to punch ${slotType(i).toLowerCase()}</span>`}
+                          <span class=${`punched${fresh.includes(i) ? " ink" : ""}${low ? " low" : ""}`}>
+                            ${stamp(p)}${low ? html`<span class="qmark" title="the reader was unsure">?</span>` : ""}
+                          </span>
                           ${showDur && html`
                             <span class=${`dur${shift.bad ? " flag" : ""}`}>
                               ${shift.bad ? "check this" : `${hrs(shift.minutes)} h`}
@@ -526,12 +559,13 @@ export function TimeCard() {
                 </div>
               `;
             })}
-            ${!showAll && visible < SLOTS && html`
-              <button class="more" onClick=${() => setShowAll(true)}>
-                Show the remaining ${SLOTS - visible} lines
-              </button>
-            `}
+            <button class="add" onClick=${addPunch}>+ Add punch</button>
           </div>
+          ${uncertain > 0 && html`
+            <p class="uncertainnote">
+              ${uncertain} row${uncertain === 1 ? "" : "s"} the reader wasn't sure about — tap to check.
+            </p>
+          `}
 
           <div class="totals">
             <div class="tline">
@@ -613,3 +647,9 @@ export function TimeCard() {
 const mount =
   typeof document !== "undefined" && document.getElementById("app");
 if (mount) render(html`<${TimeCard} />`, mount);
+
+if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+  });
+}

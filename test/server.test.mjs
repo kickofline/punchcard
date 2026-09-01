@@ -16,6 +16,13 @@ test("staticTarget maps / to index.html and passes allow-listed assets", () => {
   assert.equal(staticTarget("/app.mjs"), "app.mjs");
   assert.equal(staticTarget("/vendor/preact.mjs"), "vendor/preact.mjs");
   assert.equal(staticTarget("/fonts/caveat.woff2"), "fonts/caveat.woff2");
+  assert.equal(staticTarget("/sw.js"), "sw.js");
+  assert.equal(staticTarget("/manifest.webmanifest"), "manifest.webmanifest");
+  assert.equal(staticTarget("/icons/icon-192.png"), "icons/icon-192.png");
+});
+
+test("staticTarget aliases the bare favicon request", () => {
+  assert.equal(staticTarget("/favicon.ico"), "icons/favicon-48.png");
 });
 
 test("staticTarget refuses anything off the allow-list", () => {
@@ -38,14 +45,18 @@ test("punchesFromGeminiText parses a bare JSON object and pads the hour", () => 
   const out = punchesFromGeminiText(
     '{"punches":[{"type":"IN","date":"2026-09-02","time":"7:58"}]}'
   );
-  assert.deepEqual(out, [{ type: "IN", date: "2026-09-02", time: "07:58" }]);
+  assert.deepEqual(out, [
+    { type: "IN", date: "2026-09-02", time: "07:58", confidence: 1 },
+  ]);
 });
 
 test("punchesFromGeminiText strips ```json fences and uppercases the type", () => {
   const out = punchesFromGeminiText(
     '```json\n{"punches":[{"type":"out","date":"2026-09-02","time":"17:04"}]}\n```'
   );
-  assert.deepEqual(out, [{ type: "OUT", date: "2026-09-02", time: "17:04" }]);
+  assert.deepEqual(out, [
+    { type: "OUT", date: "2026-09-02", time: "17:04", confidence: 1 },
+  ]);
 });
 
 test("punchesFromGeminiText finds the object inside surrounding prose", () => {
@@ -60,11 +71,24 @@ test("punchesFromGeminiText drops entries that fail validation", () => {
       '{"type":"OUT","date":"2026-09-02","time":"16:30"}' +
       "]}"
   );
-  assert.deepEqual(out, [{ type: "OUT", date: "2026-09-02", time: "16:30" }]);
+  assert.deepEqual(out, [
+    { type: "OUT", date: "2026-09-02", time: "16:30", confidence: 1 },
+  ]);
 });
 
 test("punchesFromGeminiText throws when the reply has no JSON object", () => {
   assert.throws(() => punchesFromGeminiText("I could not read the card"), /no json/i);
+});
+
+test("punchesFromGeminiText keeps a clamped confidence, defaulting to 1", () => {
+  const out = punchesFromGeminiText(
+    '{"punches":[' +
+      '{"type":"IN","date":"2026-09-02","time":"08:00","confidence":0.4},' +
+      '{"type":"OUT","date":"2026-09-02","time":"16:30","confidence":5},' +
+      '{"type":"IN","date":"2026-09-03","time":"08:00"}' +
+      "]}"
+  );
+  assert.deepEqual(out.map((p) => p.confidence), [0.4, 1, 1]);
 });
 
 /* ------------------------------- isQuotaError ------------------------------ */

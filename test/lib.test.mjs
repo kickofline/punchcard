@@ -105,3 +105,33 @@ test("readCard leaves an unclosed shift open", () => {
   assert.equal(shifts[0].open, true);
   assert.equal(shifts[0].minutes, 0);
 });
+
+test("readCard rolls a same-date overnight OUT forward a day", () => {
+  const grid = Array(SLOTS).fill(null);
+  grid[0] = { type: "IN", date: "2026-08-31", time: "22:00" };
+  grid[1] = { type: "OUT", date: "2026-08-31", time: "06:00" };
+  const { shifts, notes } = readCard(grid);
+  assert.equal(notes.length, 0);
+  assert.equal(shifts[0].minutes, 480); // 8h across midnight
+  assert.equal(shifts[0].overnight, true);
+  assert.equal(shifts[0].bad, undefined);
+});
+
+test("readCard still flags a backwards pair that isn't a plausible overnight", () => {
+  const grid = Array(SLOTS).fill(null);
+  grid[0] = { type: "IN", date: "2026-08-31", time: "23:00" };
+  grid[1] = { type: "OUT", date: "2026-08-31", time: "22:00" }; // rolled = 23h > 16h cap
+  const { shifts, notes } = readCard(grid);
+  assert.equal(shifts[0].bad, true);
+  assert.equal(shifts[0].minutes, 0);
+  assert.match(notes[0], /before the punch in/i);
+});
+
+test("readCard marks a shift overnight when the OUT is already dated next day", () => {
+  const grid = Array(SLOTS).fill(null);
+  grid[0] = { type: "IN", date: "2026-08-31", time: "22:00" };
+  grid[1] = { type: "OUT", date: "2026-09-01", time: "06:00" };
+  const { shifts } = readCard(grid);
+  assert.equal(shifts[0].minutes, 480);
+  assert.equal(shifts[0].overnight, true);
+});
