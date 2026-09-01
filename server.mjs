@@ -167,7 +167,7 @@ async function callGemini(model, image, mimeType) {
    cost every request. In-memory only; resets on restart. */
 let preferredModel = null;
 
-async function readCardImage(image, mimeType) {
+async function readCardImage(image, mimeType, onEvent = () => {}) {
   const order =
     preferredModel && MODELS.includes(preferredModel)
       ? [preferredModel, ...MODELS.filter((m) => m !== preferredModel)]
@@ -177,8 +177,10 @@ async function readCardImage(image, mimeType) {
   let lastBusy = false;
   for (const model of order) {
     const t = Date.now();
+    onEvent("try", { model });
     const { status, body } = await callGemini(model, image, mimeType);
-    console.log(`  ${model} ${status} ${Date.now() - t}ms`);
+    const ms = Date.now() - t;
+    console.log(`  ${model} ${status} ${ms}ms`);
     if (status === 200) {
       const text = ((body.candidates && body.candidates[0] &&
         body.candidates[0].content && body.candidates[0].content.parts) || [])
@@ -189,6 +191,7 @@ async function readCardImage(image, mimeType) {
     }
     lastErr = (body.error && body.error.message) || `HTTP ${status}`;
     lastBusy = shouldFallThrough(status, body);
+    onEvent("fell_through", { model, status, ms, busy: lastBusy });
     if (!lastBusy) {
       const e = new Error(lastErr);
       e.upstream = true;
@@ -263,16 +266,28 @@ async function handleRead(req, res) {
     return sendJson(res, 400, { error: e.message });
   }
 
+  // Body is valid: switch to an event stream so the page can narrate the
+  // model attempts. HTTP status stays 200; success/failure is the last event.
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  const emit = (event, data) => {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
   const t0 = Date.now();
   try {
-    const { punches, model } = await readCardImage(clean.image, clean.mimeType);
-    console.log(`/api/read 200  ${model}  ${punches.length} punches  ${Date.now() - t0}ms`);
-    sendJson(res, 200, { punches, model });
+    const { punches, model } = await readCardImage(clean.image, clean.mimeType, emit);
+    console.log(`/api/read done  ${model}  ${punches.length} punches  ${Date.now() - t0}ms`);
+    emit("done", { punches, model });
   } catch (e) {
-    const code = e.busy ? 503 : e.upstream ? 502 : 500;
-    console.log(`/api/read ${code}  ${Date.now() - t0}ms  ${e.message || e}`);
-    sendJson(res, code, { error: e.message || String(e) });
+    console.log(`/api/read error  ${Date.now() - t0}ms  ${e.message || e}`);
+    emit("error", { error: e.message || String(e), busy: !!e.busy });
   }
+  res.end();
 }
 
 /* Resolve a request path to an allow-listed file name, or null. */

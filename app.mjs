@@ -20,6 +20,7 @@ import {
   isPunch,
   layout,
   readCard,
+  prettyModel,
 } from "./lib.mjs";
 
 const html = htmFactory.bind(h);
@@ -120,9 +121,10 @@ async function loadShot(file) {
 
 /* --------------------------------- reader -------------------------------- */
 
-/* Send the photo to the server, which relays it to the vision model and
-   returns { punches: [{type,date,time}] }. */
-async function readCardImage(dataURL) {
+/* Send the photo to the server and consume its event stream. `onStep(text)` is
+   called with a human status line as each model is tried. Resolves to the
+   punch list. */
+async function readCardImage(dataURL, onStep = () => {}) {
   let res;
   try {
     res = await fetch("/api/read", {
@@ -137,14 +139,55 @@ async function readCardImage(dataURL) {
     }
     throw new Error("Could not reach the reader. Check your connection and try again.");
   }
-  let body = {};
-  try {
-    body = await res.json();
-  } catch (e) { /* leave body empty */ }
-  if (!res.ok) {
+
+  // Validation failures come back as plain JSON before the stream starts.
+  if (!res.ok || !res.body) {
+    let body = {};
+    try { body = await res.json(); } catch (e) { /* ignore */ }
     throw new Error(body.error || "The reader could not read that photo. Try again.");
   }
-  const found = (body.punches || []).filter(isPunch);
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result = null;
+  let errText = null;
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let sep;
+      while ((sep = buffer.indexOf("\n\n")) >= 0) {
+        const frame = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+        const event = (frame.match(/^event: (.*)$/m) || [])[1];
+        const dataLine = (frame.match(/^data: (.*)$/m) || [])[1];
+        let data = {};
+        try { data = dataLine ? JSON.parse(dataLine) : {}; } catch (e) { /* ignore */ }
+        if (event === "try") {
+          onStep(`Asking ${prettyModel(data.model)}…`);
+        } else if (event === "fell_through") {
+          onStep(`${prettyModel(data.model)} was busy — trying the next one…`);
+        } else if (event === "done") {
+          result = data;
+        } else if (event === "error") {
+          errText = data.error;
+        }
+      }
+    }
+  } catch (e) {
+    if (e && e.name === "TimeoutError") {
+      throw new Error("The reader took too long. It may be busy - try again in a moment.");
+    }
+    throw new Error("The reader connection dropped. Try again.");
+  }
+
+  if (errText) throw new Error(errText);
+  if (!result) throw new Error("The reader gave no answer. Try again.");
+
+  const found = (result.punches || []).filter(isPunch);
   if (!found.length) {
     throw new Error("No stamped rows were read. Get closer, fill the frame, and keep glare off the card.");
   }
@@ -159,6 +202,7 @@ export function TimeCard() {
   const [editing, setEditing] = useState(null);
   const [draft, setDraft] = useState({ date: todayISO(), time: nowHM() });
   const [status, setStatus] = useState("idle"); // idle | camera | reading
+  const [readMsg, setReadMsg] = useState("");
   const [error, setError] = useState("");
   const [fresh, setFresh] = useState([]);
   const [showAll, setShowAll] = useState(false);
@@ -292,20 +336,23 @@ export function TimeCard() {
   async function send(s) {
     setShot(s);
     setStatus("reading");
+    setReadMsg("Sending the photo…");
     setError("");
     try {
-      const found = await readCardImage(s.src);
+      const found = await readCardImage(s.src, setReadMsg);
       const merged = layout([...punches, ...found]);
       const keys = new Set(found.map((p) => `${p.type}|${p.date}|${p.time}`));
       setFresh(merged.map((p, i) => (p && keys.has(`${p.type}|${p.date}|${p.time}`) ? i : -1)).filter((i) => i >= 0));
       setPunches(merged.filter(Boolean));
       setShot(null);
       setStatus("idle");
+      setReadMsg("");
       setTimeout(() => setFresh([]), 2500);
     } catch (err) {
       setError(err.message || "That photo could not be read.");
       setShot(null);
       setStatus("idle");
+      setReadMsg("");
     }
   }
 
@@ -368,6 +415,9 @@ export function TimeCard() {
               <img src=${shot.src} alt="Captured time card" />
               <div class="scan"></div>
             </div>
+          </div>
+          <div class="shutterbar">
+            <span class="readnote">${readMsg || "Working…"}</span>
           </div>
         </div>
       `}

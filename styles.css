@@ -119,6 +119,7 @@ html,body{margin:0;padding:0;}
   max-height:calc(100vh - 172px);max-height:calc(100svh - 172px);}
 .guide{position:absolute;border:2px dashed rgba(239,230,208,.65);width:34%;height:78%;pointer-events:none;}
 .shutterbar{display:flex;justify-content:center;align-items:center;gap:14px;padding:16px;background:#1F221B;}
+.readnote{color:#C9C2A8;font-size:14px;font-weight:600;text-align:center;min-height:1.2em;letter-spacing:.01em;}
 .shutter{width:66px;height:66px;border-radius:50%;border:4px solid #EFE6D0;background:#565073;cursor:pointer;}
 .shutter:focus-visible{outline:2px solid #C9C2A8;outline-offset:3px;}
 

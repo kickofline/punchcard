@@ -12,7 +12,16 @@ import {
   isPunch,
   layout,
   readCard,
+  prettyModel,
 } from "../lib.mjs";
+
+test("prettyModel trims the gemini- prefix and -latest suffix", () => {
+  assert.equal(prettyModel("gemini-flash-latest"), "flash");
+  assert.equal(prettyModel("gemini-3.7-flash"), "3.7 flash");
+  assert.equal(prettyModel("gemini-3.5-flash-lite"), "3.5 flash lite");
+  assert.equal(prettyModel(""), "the reader");
+  assert.equal(prettyModel(undefined), "the reader");
+});
 
 /* ------------------------------ format helpers ------------------------------ */
 

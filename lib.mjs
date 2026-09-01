@@ -5,6 +5,16 @@ export const SLOTS = 24; // 12 IN/OUT pairs, same as the paper card
 export const slotType = (i) => (i % 2 === 0 ? "IN" : "OUT");
 export const MON = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
 
+/* "gemini-3.5-flash-lite" -> "3.5 flash lite"; "gemini-flash-latest" -> "flash".
+   For short status lines. */
+export function prettyModel(id) {
+  return String(id || "")
+    .replace(/^gemini-/, "")
+    .replace(/-latest$/, "")
+    .replace(/-/g, " ")
+    .trim() || "the reader";
+}
+
 export const todayISO = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
