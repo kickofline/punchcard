@@ -129,8 +129,12 @@ async function readCardImage(dataURL) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ image: dataURL }),
+      signal: AbortSignal.timeout(55000),
     });
   } catch (e) {
+    if (e && e.name === "TimeoutError") {
+      throw new Error("The reader took too long. It may be busy - try again in a moment.");
+    }
     throw new Error("Could not reach the reader. Check your connection and try again.");
   }
   let body = {};

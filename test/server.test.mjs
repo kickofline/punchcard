@@ -82,12 +82,14 @@ test("isQuotaError is false for other failures", () => {
   assert.equal(isQuotaError(200, {}), false);
 });
 
-test("shouldFallThrough covers quota and transient overload", () => {
+test("shouldFallThrough covers quota, overload, slowness and retired models", () => {
   assert.equal(shouldFallThrough(429, {}), true);
   assert.equal(shouldFallThrough(503, {}), true);
+  assert.equal(shouldFallThrough(504, { error: { status: "DEADLINE" } }), true);
+  assert.equal(shouldFallThrough(404, { error: { status: "NOT_FOUND" } }), true);
   assert.equal(shouldFallThrough(400, { error: { status: "UNAVAILABLE" } }), true);
   assert.equal(shouldFallThrough(400, { error: { status: "INVALID_ARGUMENT" } }), false);
-  assert.equal(shouldFallThrough(404, { error: { status: "NOT_FOUND" } }), false);
+  assert.equal(shouldFallThrough(403, { error: { status: "PERMISSION_DENIED" } }), false);
 });
 
 /* ------------------------------ validateReadBody ------------------------- */

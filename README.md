@@ -37,13 +37,15 @@ node --test
 | Env var | Default | Notes |
 | --- | --- | --- |
 | `GEMINI_API_KEY` | — | required for `/api/read` |
-| `GEMINI_MODEL` | `gemini-3.7-flash,gemini-3.5-flash-lite` | comma list; the next model is tried when the one before is out of quota or overloaded |
+| `GEMINI_MODEL` | `gemini-flash-latest,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-flash-lite-latest` | comma list, newest first; the next model is tried when the one before is out of quota, overloaded, missing, or slow |
+| `GEMINI_TIMEOUT_MS` | `9000` | per-model deadline; a model that hasn't answered by then is abandoned for the next one |
 | `PORT` | `3000` | Coolify sets this automatically |
 | `HOST` | `0.0.0.0` | binds all interfaces (reachable from other devices on the LAN); set `127.0.0.1` for local-only |
 
-The default pairs the stronger Flash model (best at reading dot-matrix stamps,
-~20 requests/day on the free tier) with Flash-Lite as an overflow (500/day,
-weaker). The server also does one short retry per model on a transient 503.
+The default walks newest to oldest through the Flash family. The stronger
+models read dot-matrix stamps best but have a ~20 req/day free cap; the `-lite`
+models are weaker but allow 500/day, so they backstop the list. Each model gets
+one `GEMINI_TIMEOUT_MS` window before the server moves on.
 
 ## Deploy (Coolify)
 

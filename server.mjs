@@ -2,11 +2,13 @@
    Gemini vision API so the API key never reaches the browser.
 
    Env:
-     GEMINI_API_KEY   required for /api/read
-     GEMINI_MODEL     comma list, tried in order on quota errors
-                      (default: gemini-3.7-flash,gemini-3.5-flash-lite)
-     PORT             default 3000
-     HOST             default 0.0.0.0 (all interfaces); 127.0.0.1 for local only
+     GEMINI_API_KEY     required for /api/read
+     GEMINI_MODEL       comma list, tried in order when one is busy / out of
+                        quota / missing / slow. Default is a newest-to-oldest
+                        cascade of flash models.
+     GEMINI_TIMEOUT_MS  per-model deadline before giving up on it (default 9000)
+     PORT               default 3000
+     HOST               default 0.0.0.0 (all interfaces); 127.0.0.1 for local only
 */
 
 import { createServer } from "node:http";
@@ -18,8 +20,19 @@ import { argv } from "node:process";
 const ROOT = fileURLToPath(new URL(".", import.meta.url));
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || "0.0.0.0"; // all interfaces; set HOST=127.0.0.1 to keep it local
+const CALL_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS || 9000);
 const API_KEY = process.env.GEMINI_API_KEY || "";
-const MODELS = (process.env.GEMINI_MODEL || "gemini-3.7-flash,gemini-3.5-flash-lite")
+const MODELS = (
+  process.env.GEMINI_MODEL ||
+  [
+    "gemini-flash-latest",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-flash-lite-latest",
+  ].join(",")
+)
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
@@ -59,12 +72,17 @@ export function isQuotaError(status, body) {
   return !!(body && body.error && body.error.status === "RESOURCE_EXHAUSTED");
 }
 
-/* Worth trying the next model (or retrying): out of quota, or the model is
-   momentarily overloaded. */
+/* Worth trying the next model: out of quota, momentarily overloaded, too slow,
+   or retired (404). Only a "this request is bad" error (400, 403) stops the
+   cascade. */
 export function shouldFallThrough(status, body) {
   if (isQuotaError(status, body)) return true;
-  if (status === 503 || status === 500) return true;
-  return !!(body && body.error && body.error.status === "UNAVAILABLE");
+  if ([500, 503, 504, 404].includes(status)) return true;
+  return !!(
+    body &&
+    body.error &&
+    ["UNAVAILABLE", "DEADLINE", "NOT_FOUND", "INTERNAL"].includes(body.error.status)
+  );
 }
 
 const validPunch = (p) =>
@@ -112,63 +130,74 @@ Rules:
 
 async function callGemini(model, image, mimeType) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-goog-api-key": API_KEY },
-    body: JSON.stringify({
-      contents: [
-        {
-          parts: [
-            { inline_data: { mime_type: mimeType, data: image } },
-            { text: PROMPT },
-          ],
-        },
-      ],
-      generationConfig: { temperature: 0 },
-    }),
-  });
-  let body = {};
   try {
-    body = await res.json();
-  } catch {
-    /* leave body empty */
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-goog-api-key": API_KEY },
+      signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [
+              { inline_data: { mime_type: mimeType, data: image } },
+              { text: PROMPT },
+            ],
+          },
+        ],
+        generationConfig: { temperature: 0 },
+      }),
+    });
+    let body = {};
+    try {
+      body = await res.json();
+    } catch {
+      /* leave body empty */
+    }
+    return { status: res.status, body };
+  } catch (e) {
+    // timeout / network drop - let the caller fall through to the next model
+    return {
+      status: 504,
+      body: { error: { status: "DEADLINE", message: `${model}: ${e.name === "TimeoutError" ? "timed out" : e.message}` } },
+    };
   }
-  return { status: res.status, body };
 }
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/* The model that last answered, tried first next time so a busy leader does not
+   cost every request. In-memory only; resets on restart. */
+let preferredModel = null;
 
 async function readCardImage(image, mimeType) {
+  const order =
+    preferredModel && MODELS.includes(preferredModel)
+      ? [preferredModel, ...MODELS.filter((m) => m !== preferredModel)]
+      : MODELS;
+
   let lastErr = "no models configured";
   let lastBusy = false;
-  for (const model of MODELS) {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const { status, body } = await callGemini(model, image, mimeType);
-      if (status === 200) {
-        const text = ((body.candidates && body.candidates[0] &&
-          body.candidates[0].content && body.candidates[0].content.parts) || [])
-          .map((p) => p.text || "")
-          .join("");
-        return { punches: punchesFromGeminiText(text), model };
-      }
-      lastErr = (body.error && body.error.message) || `HTTP ${status}`;
-      lastBusy = status === 503 || (body.error && body.error.status === "UNAVAILABLE");
-      if (!shouldFallThrough(status, body)) {
-        const e = new Error(lastErr);
-        e.upstream = true;
-        throw e;
-      }
-      if (lastBusy && attempt === 0) {
-        await sleep(1500); // brief pause, then one retry on the same model
-        continue;
-      }
-      break; // move to the next model
+  for (const model of order) {
+    const t = Date.now();
+    const { status, body } = await callGemini(model, image, mimeType);
+    console.log(`  ${model} ${status} ${Date.now() - t}ms`);
+    if (status === 200) {
+      const text = ((body.candidates && body.candidates[0] &&
+        body.candidates[0].content && body.candidates[0].content.parts) || [])
+        .map((p) => p.text || "")
+        .join("");
+      preferredModel = model;
+      return { punches: punchesFromGeminiText(text), model };
     }
+    lastErr = (body.error && body.error.message) || `HTTP ${status}`;
+    lastBusy = shouldFallThrough(status, body);
+    if (!lastBusy) {
+      const e = new Error(lastErr);
+      e.upstream = true;
+      throw e;
+    }
+    // overloaded / slow / out of quota / retired - on to the next model
   }
   const e = new Error(
-    lastBusy
-      ? "The reader is busy right now. Try again in a moment."
-      : lastErr
+    lastBusy ? "Every model was busy or out of quota. Try again in a moment." : lastErr
   );
   e.upstream = true;
   e.busy = lastBusy;
@@ -234,11 +263,14 @@ async function handleRead(req, res) {
     return sendJson(res, 400, { error: e.message });
   }
 
+  const t0 = Date.now();
   try {
     const { punches, model } = await readCardImage(clean.image, clean.mimeType);
+    console.log(`/api/read 200  ${model}  ${punches.length} punches  ${Date.now() - t0}ms`);
     sendJson(res, 200, { punches, model });
   } catch (e) {
     const code = e.busy ? 503 : e.upstream ? 502 : 500;
+    console.log(`/api/read ${code}  ${Date.now() - t0}ms  ${e.message || e}`);
     sendJson(res, code, { error: e.message || String(e) });
   }
 }
