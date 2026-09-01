@@ -2,7 +2,7 @@
    punch entry and totals work with no signal. The reader (/api/read) always
    goes to the network. */
 
-const CACHE = "punchcard-v3";
+const CACHE = "punchcard-v4";
 
 const SHELL = [
   "/",
@@ -36,29 +36,28 @@ self.addEventListener("activate", (event) => {
   );
 });
 
+/* Network-first for everything same-origin: online visitors always get the
+   deployed version, offline visitors fall back to the last good copy (and the
+   app shell for navigations). Only /api/read is left entirely alone. */
 self.addEventListener("fetch", (event) => {
   const { request } = event;
-  if (request.method !== "GET") return; // /api/read POST goes straight to the network
+  if (request.method !== "GET") return;
 
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
   if (url.pathname === "/api/read") return;
 
-  if (request.mode === "navigate") {
-    event.respondWith(fetch(request).catch(() => caches.match("/index.html")));
-    return;
-  }
-
   event.respondWith(
-    caches.match(request).then((hit) => {
-      if (hit) return hit;
-      return fetch(request).then((resp) => {
-        if (resp.ok) {
+    fetch(request)
+      .then((resp) => {
+        if (resp && resp.ok) {
           const copy = resp.clone();
           caches.open(CACHE).then((cache) => cache.put(request, copy));
         }
         return resp;
-      });
-    })
+      })
+      .catch(() =>
+        caches.match(request).then((hit) => hit || caches.match("/index.html"))
+      )
   );
 });

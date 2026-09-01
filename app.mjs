@@ -641,6 +641,12 @@ const mount =
 if (mount) render(html`<${TimeCard} />`, mount);
 
 if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+  let reloading = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (reloading) return;
+    reloading = true;
+    location.reload(); // a new worker took over - pick up the fresh assets
+  });
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("/sw.js").catch(() => {});
   });
