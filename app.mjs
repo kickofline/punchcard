@@ -434,19 +434,19 @@ export function TimeCard() {
   }
 
   return html`
-    <div class="desk">
+    <div class="app">
       ${status === "camera" && html`
         <div class="stage">
           <div class="stagebar">
-            <span>Fill the frame with the card, then tap the shutter</span>
-            <button class="btn" onClick=${() => { stopCamera(); setStatus("idle"); }}>Cancel</button>
+            <span>Line the card up in the frame, then take the photo</span>
+            <button class="x" onClick=${() => { stopCamera(); setStatus("idle"); }}>Cancel</button>
           </div>
           <div class="stagebody">
             <video ref=${video} playsinline muted></video>
             <div class="guide"></div>
           </div>
           <div class="shutterbar">
-            <button class="shutter" onClick=${grabFrame} aria-label="Capture"></button>
+            <button class="shutter" onClick=${grabFrame} aria-label="Take photo"></button>
           </div>
         </div>
       `}
@@ -454,46 +454,44 @@ export function TimeCard() {
       ${status === "reading" && shot && html`
         <div class="stage">
           <div class="stagebar">
-            <span>Reading the card…</span>
+            <span>Reading your card…</span>
             <span class="elapsed">${elapsed}s</span>
           </div>
           <div class="stagebody">
             <div class="frame">
-              <img src=${shot.src} alt="Captured time card" />
-              <div class="scan"></div>
+              <img src=${shot.src} alt="Photo of the time card" />
+              <div class="bar"></div>
             </div>
           </div>
           <div class="readpanel">
-            <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
             <p class="readnote">${readMsg || "Sending the photo…"}</p>
           </div>
         </div>
       `}
 
-      <div class="wrap">
-        <div class="masthead">
-          <h1>Time card</h1>
-          <p>Point the camera at the card and the punches come across.</p>
-          <p class="ainote">An AI reads the photo, so it can misread a stamp — check every row against the card before you submit your hours.</p>
-        </div>
+      <header class="appbar"><h1>Time Card</h1></header>
 
-        <div class="tiles">
+      <div class="wrap">
+        <p class="intro">Photograph your punch card to total your hours.</p>
+        <p class="ainote">An AI reads the photo and can misread a faint stamp. Check every row against the card before you submit your hours.</p>
+
+        <div class="stats">
           <button
-            class="tile"
+            class="stat"
             onClick=${() => last && copy(hrs(last.minutes), "last")}
             disabled=${!last}
           >
-            <span class="tag">Last clock</span>
+            <span class="tag">Last shift</span>
             <span class="figure">${last ? hrs(last.minutes) : "—"}</span>
             <span class="sub">
               ${last
-                ? `${clock12(last.in)} to ${clock12(last.out)} · ${last.minutes} min`
-                : "no finished clock yet"}
+                ? `${clock12(last.in)}–${clock12(last.out)} · ${last.minutes} min`
+                : "No completed shift yet"}
             </span>
             <span class="cue">${copied === "last" ? "Copied" : last ? "Tap to copy" : ""}</span>
           </button>
           <button
-            class="tile now"
+            class="stat today"
             onClick=${() => todayRow && copy(hrs(todayRow.minutes), "today")}
             disabled=${!todayRow}
           >
@@ -501,37 +499,38 @@ export function TimeCard() {
             <span class="figure">${todayRow ? hrs(todayRow.minutes) : "0.00"}</span>
             <span class="sub">
               ${todayRow
-                ? `${todayRow.list.length} clock${todayRow.list.length === 1 ? "" : "s"} · ${todayRow.minutes} min`
-                : "nothing punched today"}
+                ? `${todayRow.list.length} shift${todayRow.list.length === 1 ? "" : "s"} · ${todayRow.minutes} min`
+                : "No shifts today"}
             </span>
             <span class="cue">${copied === "today" ? "Copied" : todayRow ? "Tap to copy" : ""}</span>
           </button>
         </div>
 
         <div class="actions">
-          <button class="btn key" onClick=${openCamera}>Use camera</button>
-          <button class="btn" onClick=${() => library.current.click()}>Upload a photo</button>
+          <button class="btn key" onClick=${openCamera}>Take photo</button>
+          <button class="btn" onClick=${() => library.current.click()}>Choose photo</button>
         </div>
         <input ref=${library} type="file" accept="image/*" onChange=${onFile} hidden />
         ${error && html`<div class="err">${error}</div>`}
 
         <div class="card">
           <div class="cardhead">
-            <span>Punch record</span>
-            <span>tap a line to edit</span>
+            <span class="h">Punches</span>
+            <span class="hint-h">Tap a row to edit</span>
           </div>
 
           <div class="grid">
             ${rows.length === 0 && editing === null && html`
-              <div class="row"><span class="empty">No punches yet — shoot the card or add one below.</span></div>
+              <div class="row"><span class="empty">No punches yet. Take a photo of your card, or add one by hand.</span></div>
             `}
             ${rows.map(({ p, i }) => {
               const shift = shifts.find((s) => s.slot === (i % 2 === 0 ? i : i - 1));
               const showDur = i % 2 === 1 && shift && shift.out;
               const low = p && p.confidence != null && p.confidence < 0.6;
+              const isOut = i % 2 === 1;
               return html`
                 <div key=${i} class=${`row${editing === i ? " editing" : ""}`}>
-                  <div class="lab">${slotType(i)}</div>
+                  <div class=${`lab${isOut ? " out" : ""}`}>${slotType(i)}</div>
                   ${editing === i
                     ? html`
                         <div class="editor">
@@ -547,11 +546,11 @@ export function TimeCard() {
                     : html`
                         <button class="val" onClick=${() => openRow(i)}>
                           <span class=${`punched${fresh.includes(i) ? " ink" : ""}${low ? " low" : ""}`}>
-                            ${stamp(p)}${low ? html`<span class="qmark" title="the reader was unsure">?</span>` : ""}
+                            ${stamp(p)}${low ? html`<span class="qmark" title="Low confidence — verify this row">?</span>` : ""}
                           </span>
                           ${showDur && html`
                             <span class=${`dur${shift.bad ? " flag" : ""}`}>
-                              ${shift.bad ? "check this" : `${hrs(shift.minutes)} h`}
+                              ${shift.bad ? "Review" : `${hrs(shift.minutes)} h`}
                             </span>
                           `}
                         </button>
@@ -559,46 +558,42 @@ export function TimeCard() {
                 </div>
               `;
             })}
-            <button class="add" onClick=${addPunch}>+ Add punch</button>
+            <button class="add" onClick=${addPunch}>Add punch</button>
           </div>
           ${uncertain > 0 && html`
             <p class="uncertainnote">
-              ${uncertain} row${uncertain === 1 ? "" : "s"} the reader wasn't sure about — tap to check.
+              ${uncertain} row${uncertain === 1 ? " was" : "s were"} read with low confidence. Verify ${uncertain === 1 ? "it" : "them"} against the card.
             </p>
           `}
 
           <div class="totals">
             <div class="tline">
-              <span>Subtotal Minutes for this card:</span>
-              <span class="fill"></span>
-              <span class="num">${cardMinutes || ""}</span>
+              <span class="lbl">This card</span>
+              <span class="num">${cardMinutes || 0} min</span>
             </div>
             <div class="tline">
-              <span>Subtotal Minutes from other cards:</span>
-              <span class="fill"></span>
+              <span class="lbl">Other cards</span>
               <input class="num" inputMode="numeric" value=${other} aria-label="Minutes from other cards"
                 onInput=${(e) => setOther(e.target.value.replace(/[^0-9]/g, ""))} />
             </div>
             <div class="tline">
-              <span>Total Minutes:</span>
-              <span class="fill"></span>
-              <span class="num">${totalMinutes || ""}</span>
+              <span class="lbl">Total minutes</span>
+              <span class="num">${totalMinutes || 0} min</span>
             </div>
             <div class="tline big">
-              <span>Minutes divided by 60 = hours (to the hundredths)</span>
-              <span class="fill"></span>
-              <span class="num">${totalMinutes ? hrs(totalMinutes) : ""}</span>
+              <span class="lbl">Hours</span>
+              <span class="num">${totalMinutes ? hrs(totalMinutes) : "0.00"}</span>
             </div>
           </div>
         </div>
 
-        <div class="aside">
+        <div class="byday">
           ${!!byDay.length && html`
-            <h2>Every clock</h2>
+            <h2>By day</h2>
             ${byDay.map((d) => html`
               <div class="daybox" key=${d.date}>
                 <div class="dayhead">
-                  <span>${dayLabel(d.date)}${d.date === today ? " · today" : ""}</span>
+                  <span>${dayLabel(d.date)}${d.date === today ? " (today)" : ""}</span>
                   <button class="copy" onClick=${() => copyDay(d)}>
                     ${copied === d.date ? "Copied" : "Copy"}
                   </button>
@@ -607,7 +602,7 @@ export function TimeCard() {
                   <div class="shift" key=${i}>
                     <span class="n">${i + 1}</span>
                     <span class="span">
-                      ${clock12(s.in)} to ${clock12(s.out)}
+                      ${clock12(s.in)}–${clock12(s.out)}${s.overnight ? " +1" : ""}
                       ${s.out.date !== s.in.date ? ` (${dayLabel(s.out.date)})` : ""}
                     </span>
                     <b>${hrs(s.minutes)} h</b>
@@ -615,13 +610,13 @@ export function TimeCard() {
                   </div>
                 `)}
                 <div class="daytotal">
-                  <span>${d.list.length} clock${d.list.length === 1 ? "" : "s"}</span>
+                  <span>${d.list.length} shift${d.list.length === 1 ? "" : "s"}</span>
                   <b>${hrs(d.minutes)} h · ${d.minutes} min</b>
                 </div>
                 ${Math.abs(d.sumOfRounded - Number(hrs(d.minutes))) >= 0.005 && html`
-                  <p class="warn small">
-                    Each clock rounded and added comes to ${d.sumOfRounded.toFixed(2)} h. Submit ${hrs(d.minutes)} h
-                    if the form wants one figure for the day.
+                  <p class="note small">
+                    Rounding each shift individually gives ${d.sumOfRounded.toFixed(2)} h.
+                    Submit ${hrs(d.minutes)} h for a single daily figure.
                   </p>
                 `}
               </div>
@@ -629,14 +624,11 @@ export function TimeCard() {
           `}
 
           ${open && html`
-            <p class="warn">
-              Still clocked in since ${clock12(open.in)}. Nothing counts until you punch out.
-            </p>
+            <p class="note">Open shift since ${clock12(open.in)}. It won't count until there's a matching OUT.</p>
           `}
-          ${notes.map((n, i) => html`<p class="warn" key=${i}>${n}</p>`)}
-          ${!byDay.length && !open && html`<p>Nothing on the card yet. Shoot it, or tap any line to enter a punch.</p>`}
+          ${notes.map((n, i) => html`<p class="note" key=${i}>${n}</p>`)}
           ${(punches.length > 0 || other) && html`
-            <button class="btn" style=${{ marginTop: 12 }} onClick=${clearCard}>Start a new card</button>
+            <button class="btn reset" onClick=${clearCard}>Clear card</button>
           `}
         </div>
       </div>

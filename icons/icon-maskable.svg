@@ -1,21 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="punchcard">
-  <rect width="512" height="512" fill="#2B2E28"/>
-  <g transform="translate(146 130) scale(0.69)">
-    <rect x="0" y="0" width="320" height="368" rx="20" fill="#EFE6D0"/>
-    <rect x="0" y="0" width="320" height="56" rx="20" fill="#565073"/>
-    <rect x="0" y="36" width="320" height="20" fill="#565073"/>
-    <g stroke="#7A7263" stroke-width="10" stroke-linecap="round">
-      <line x1="40" y1="112" x2="280" y2="112"/>
-      <line x1="40" y1="168" x2="280" y2="168"/>
-      <line x1="40" y1="224" x2="280" y2="224"/>
-      <line x1="40" y1="280" x2="280" y2="280"/>
-      <line x1="40" y1="336" x2="280" y2="336"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Time Card">
+  <rect width="512" height="512" fill="#532987"/>
+  <g transform="translate(158 148) scale(0.68)">
+    <rect x="0" y="0" width="288" height="344" rx="16" fill="#ffffff"/>
+    <rect x="0" y="0" width="288" height="44" rx="16" fill="#FFC417"/>
+    <rect x="0" y="28" width="288" height="16" fill="#FFC417"/>
+    <g stroke="#79797A" stroke-width="12" stroke-linecap="round">
+      <line x1="40" y1="108" x2="248" y2="108"/>
+      <line x1="40" y1="164" x2="248" y2="164"/>
+      <line x1="40" y1="220" x2="248" y2="220"/>
+      <line x1="40" y1="276" x2="248" y2="276"/>
     </g>
-    <g fill="#26438C" font-family="Georgia, 'Times New Roman', serif" font-weight="700" font-size="34">
-      <text x="40" y="98">IN</text>
-      <text x="40" y="210">OUT</text>
-    </g>
-    <circle cx="248" cy="140" r="16" fill="#8C3B2E"/>
-    <circle cx="248" cy="196" r="16" fill="#241F1A"/>
+    <circle cx="216" cy="108" r="15" fill="#532987"/>
+    <circle cx="216" cy="220" r="15" fill="#532987"/>
   </g>
 </svg>

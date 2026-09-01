@@ -95,7 +95,7 @@ test("readCard flags an OUT punch with no IN above it", () => {
   grid[1] = { type: "OUT", date: "2026-08-31", time: "17:30" };
   const { shifts, notes } = readCard(grid);
   assert.equal(shifts.length, 0);
-  assert.match(notes[0], /punch out with no punch in/i);
+  assert.match(notes[0], /OUT with no matching IN/i);
 });
 
 test("readCard leaves an unclosed shift open", () => {
@@ -124,7 +124,7 @@ test("readCard still flags a backwards pair that isn't a plausible overnight", (
   const { shifts, notes } = readCard(grid);
   assert.equal(shifts[0].bad, true);
   assert.equal(shifts[0].minutes, 0);
-  assert.match(notes[0], /before the punch in/i);
+  assert.match(notes[0], /OUT time is before the IN time/i);
 });
 
 test("readCard marks a shift overnight when the OUT is already dated next day", () => {

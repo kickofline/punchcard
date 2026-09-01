@@ -91,7 +91,7 @@ export function readCard(grid) {
     const outP = grid[i + 1];
     if (!inP && !outP) continue;
     if (!inP && outP) {
-      notes.push(`Line ${i + 2} has a punch out with no punch in above it.`);
+      notes.push(`Row ${i + 2} is an OUT with no matching IN above it.`);
       continue;
     }
     if (inP && !outP) {
@@ -109,7 +109,7 @@ export function readCard(grid) {
         mins = rolled;
         overnight = true;
       } else {
-        notes.push(`Line ${i + 2} punches out before the punch in above it.`);
+        notes.push(`Row ${i + 2}: the OUT time is before the IN time above it.`);
         shifts.push({ slot: i, in: inP, out: outP, minutes: 0, bad: true });
         continue;
       }
