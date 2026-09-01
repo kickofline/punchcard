@@ -6,6 +6,7 @@
      GEMINI_MODEL     comma list, tried in order on quota errors
                       (default: gemini-3.7-flash,gemini-3.5-flash-lite)
      PORT             default 3000
+     HOST             default 0.0.0.0 (all interfaces); 127.0.0.1 for local only
 */
 
 import { createServer } from "node:http";
@@ -16,6 +17,7 @@ import { argv } from "node:process";
 
 const ROOT = fileURLToPath(new URL(".", import.meta.url));
 const PORT = process.env.PORT || 3000;
+const HOST = process.env.HOST || "0.0.0.0"; // all interfaces; set HOST=127.0.0.1 to keep it local
 const API_KEY = process.env.GEMINI_API_KEY || "";
 const MODELS = (process.env.GEMINI_MODEL || "gemini-3.7-flash,gemini-3.5-flash-lite")
   .split(",")
@@ -284,7 +286,7 @@ export const server = createServer((req, res) => {
 });
 
 if (argv[1] && argv[1] === import.meta.filename) {
-  server.listen(PORT, () => {
-    console.log(`punchcard on :${PORT}  models: ${MODELS.join(" -> ")}`);
+  server.listen(PORT, HOST, () => {
+    console.log(`punchcard on ${HOST}:${PORT}  models: ${MODELS.join(" -> ")}`);
   });
 }

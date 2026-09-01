@@ -39,6 +39,7 @@ node --test
 | `GEMINI_API_KEY` | — | required for `/api/read` |
 | `GEMINI_MODEL` | `gemini-3.7-flash,gemini-3.5-flash-lite` | comma list; the next model is tried when the one before is out of quota or overloaded |
 | `PORT` | `3000` | Coolify sets this automatically |
+| `HOST` | `0.0.0.0` | binds all interfaces (reachable from other devices on the LAN); set `127.0.0.1` for local-only |
 
 The default pairs the stronger Flash model (best at reading dot-matrix stamps,
 ~20 requests/day on the free tier) with Flash-Lite as an overflow (500/day,
