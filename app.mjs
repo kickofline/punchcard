@@ -644,6 +644,11 @@ export function TimeCard() {
             <button class="btn btn-secondary reset" onClick=${clearCard}>Clear card</button>
           `}
         </div>
+
+        <p class="disclaimer">
+          The times here are read from your photo by an AI, and it can misread a faint or
+          crooked stamp. Look over every row against the card before you turn in your hours.
+        </p>
       </div>
 
       ${!lowConfSeen && uncertain > 0 && editing === null && html`
