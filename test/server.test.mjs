@@ -15,7 +15,7 @@ test("staticTarget maps / to index.html and passes allow-listed assets", () => {
   assert.equal(staticTarget("/"), "index.html");
   assert.equal(staticTarget("/app.mjs"), "app.mjs");
   assert.equal(staticTarget("/vendor/preact.mjs"), "vendor/preact.mjs");
-  assert.equal(staticTarget("/styles.css"), "styles.css");
+  assert.equal(staticTarget("/fonts/archivo.woff2"), "fonts/archivo.woff2");
   assert.equal(staticTarget("/sw.js"), "sw.js");
   assert.equal(staticTarget("/manifest.webmanifest"), "manifest.webmanifest");
   assert.equal(staticTarget("/icons/icon-192.png"), "icons/icon-192.png");

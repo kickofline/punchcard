@@ -1,16 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Time Card">
-  <rect width="512" height="512" fill="#532987"/>
-  <g transform="translate(158 148) scale(0.68)">
-    <rect x="0" y="0" width="288" height="344" rx="16" fill="#ffffff"/>
-    <rect x="0" y="0" width="288" height="44" rx="16" fill="#FFC417"/>
-    <rect x="0" y="28" width="288" height="16" fill="#FFC417"/>
-    <g stroke="#79797A" stroke-width="12" stroke-linecap="round">
-      <line x1="40" y1="108" x2="248" y2="108"/>
-      <line x1="40" y1="164" x2="248" y2="164"/>
-      <line x1="40" y1="220" x2="248" y2="220"/>
-      <line x1="40" y1="276" x2="248" y2="276"/>
+  <rect width="512" height="512" fill="#201e1d"/>
+  <g transform="translate(154 148) scale(0.67)">
+    <rect x="0" y="0" width="304" height="344" fill="#ffffff"/>
+    <rect x="0" y="0" width="304" height="46" fill="#ec3013"/>
+    <g stroke="#201e1d" stroke-width="14">
+      <line x1="36" y1="112" x2="268" y2="112"/>
+      <line x1="36" y1="168" x2="268" y2="168"/>
+      <line x1="36" y1="224" x2="268" y2="224"/>
+      <line x1="36" y1="280" x2="268" y2="280"/>
     </g>
-    <circle cx="216" cy="108" r="15" fill="#532987"/>
-    <circle cx="216" cy="220" r="15" fill="#532987"/>
+    <rect x="228" y="100" width="26" height="26" fill="#ec3013"/>
+    <rect x="228" y="212" width="26" height="26" fill="#ec3013"/>
   </g>
 </svg>

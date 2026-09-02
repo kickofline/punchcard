@@ -2,7 +2,7 @@
    punch entry and totals work with no signal. The reader (/api/read) always
    goes to the network. */
 
-const CACHE = "punchcard-v4";
+const CACHE = "punchcard-v5";
 
 const SHELL = [
   "/",
@@ -14,6 +14,7 @@ const SHELL = [
   "/vendor/preact.mjs",
   "/vendor/hooks.mjs",
   "/vendor/htm.mjs",
+  "/fonts/archivo.woff2",
   "/icons/favicon.svg",
   "/icons/icon-192.png",
 ];

@@ -231,6 +231,7 @@ export function TimeCard() {
   const [readMsg, setReadMsg] = useState("");
   const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState("");
+  const [lowConfSeen, setLowConfSeen] = useState(true);
   const [fresh, setFresh] = useState([]);
   const [copied, setCopied] = useState(null);
   const [shot, setShot] = useState(null);
@@ -299,7 +300,9 @@ export function TimeCard() {
   const rows = grid
     .map((p, i) => ({ p, i }))
     .filter(({ p, i }) => p || editing === i);
+  const lowSlot = grid.findIndex((p) => p && p.confidence != null && p.confidence < 0.6);
   const uncertain = grid.filter((p) => p && p.confidence != null && p.confidence < 0.6).length;
+  const dateStamp = `${today.slice(5, 7)}.${today.slice(8, 10)}.${today.slice(2, 4)}`;
 
   /* ------------------------------- clipboard ------------------------------ */
 
@@ -386,6 +389,7 @@ export function TimeCard() {
       setShot(null);
       setStatus("idle");
       setReadMsg("");
+      setLowConfSeen(!found.some((p) => p.confidence != null && p.confidence < 0.6));
       setTimeout(() => setFresh([]), 2500);
     } catch (err) {
       setError(err.message || "That photo could not be read.");
@@ -438,12 +442,14 @@ export function TimeCard() {
       ${status === "camera" && html`
         <div class="stage">
           <div class="stagebar">
-            <span>Line the card up in the frame, then take the photo</span>
+            <span>Align the card. Shoot it.</span>
             <button class="x" onClick=${() => { stopCamera(); setStatus("idle"); }}>Cancel</button>
           </div>
           <div class="stagebody">
             <video ref=${video} playsinline muted></video>
-            <div class="guide"></div>
+            <div class="guide">
+              <span class="tl"></span><span class="tr"></span><span class="bl"></span><span class="br"></span>
+            </div>
           </div>
           <div class="shutterbar">
             <button class="shutter" onClick=${grabFrame} aria-label="Take photo"></button>
@@ -454,7 +460,7 @@ export function TimeCard() {
       ${status === "reading" && shot && html`
         <div class="stage">
           <div class="stagebar">
-            <span>Reading your card…</span>
+            <span>Reading your card</span>
             <span class="elapsed">${elapsed}s</span>
           </div>
           <div class="stagebody">
@@ -469,11 +475,14 @@ export function TimeCard() {
         </div>
       `}
 
-      <header class="appbar"><h1>Time Card</h1></header>
+      <header class="appbar">
+        <span class="brand">Time Card</span>
+        <span class="date">${dateStamp}</span>
+      </header>
 
       <div class="wrap">
-        <p class="intro">Photograph your punch card to total your hours.</p>
-        <p class="ainote">An AI reads the photo and can misread a faint stamp. Check every row against the card before you submit your hours.</p>
+        <p class="intro">Photograph the card. Get your hours.</p>
+        <p class="ainote">AI reads the stamps. It misreads faint ones. Check every row before you submit.</p>
 
         <div class="stats">
           <button
@@ -486,7 +495,7 @@ export function TimeCard() {
             <span class="sub">
               ${last
                 ? `${clock12(last.in)}–${clock12(last.out)} · ${last.minutes} min`
-                : "No completed shift yet"}
+                : "No completed shift"}
             </span>
             <span class="cue">${copied === "last" ? "Copied" : last ? "Tap to copy" : ""}</span>
           </button>
@@ -507,21 +516,21 @@ export function TimeCard() {
         </div>
 
         <div class="actions">
-          <button class="btn key" onClick=${openCamera}>Take photo</button>
-          <button class="btn" onClick=${() => library.current.click()}>Choose photo</button>
+          <button class="btn btn-primary" onClick=${openCamera}>Take photo</button>
+          <button class="btn btn-secondary" onClick=${() => library.current.click()}>Choose photo</button>
         </div>
         <input ref=${library} type="file" accept="image/*" onChange=${onFile} hidden />
         ${error && html`<div class="err">${error}</div>`}
 
-        <div class="card">
-          <div class="cardhead">
+        <div class="sheet">
+          <div class="sheethead">
             <span class="h">Punches</span>
             <span class="hint-h">Tap a row to edit</span>
           </div>
 
           <div class="grid">
             ${rows.length === 0 && editing === null && html`
-              <div class="row"><span class="empty">No punches yet. Take a photo of your card, or add one by hand.</span></div>
+              <div class="empty">No punches. Photograph the card, or add one by hand.</div>
             `}
             ${rows.map(({ p, i }) => {
               const shift = shifts.find((s) => s.slot === (i % 2 === 0 ? i : i - 1));
@@ -534,20 +543,21 @@ export function TimeCard() {
                   ${editing === i
                     ? html`
                         <div class="editor">
-                          <input type="date" value=${draft.date} aria-label="Date"
+                          <input class="input" type="date" value=${draft.date} aria-label="Date"
                             onInput=${(e) => setDraft({ ...draft, date: e.target.value })} />
-                          <input type="time" value=${draft.time} aria-label="Time"
+                          <input class="input" type="time" value=${draft.time} aria-label="Time"
                             onInput=${(e) => setDraft({ ...draft, time: e.target.value })} />
-                          <button class="mini go" onClick=${saveRow}>Save</button>
-                          <button class="mini drop" onClick=${clearRow}>Remove</button>
-                          <button class="mini" onClick=${() => setEditing(null)}>Cancel</button>
+                          <button class="btn btn-primary" onClick=${saveRow}>Save</button>
+                          <button class="btn btn-ghost" onClick=${() => setEditing(null)}>Cancel</button>
+                          <button class="mini-remove" onClick=${clearRow}>Remove</button>
                         </div>
                       `
                     : html`
                         <button class="val" onClick=${() => openRow(i)}>
-                          <span class=${`punched${fresh.includes(i) ? " ink" : ""}${low ? " low" : ""}`}>
-                            ${stamp(p)}${low ? html`<span class="qmark" title="Low confidence — verify this row">?</span>` : ""}
+                          <span class=${`punched${fresh.includes(i) ? " ink-flash" : ""}${low ? " low" : ""}`}>
+                            ${stamp(p)}
                           </span>
+                          ${low && html`<span class="qmark" title="Low confidence — verify this row">[?]</span>`}
                           ${showDur && html`
                             <span class=${`dur${shift.bad ? " flag" : ""}`}>
                               ${shift.bad ? "Review" : `${hrs(shift.minutes)} h`}
@@ -558,13 +568,8 @@ export function TimeCard() {
                 </div>
               `;
             })}
-            <button class="add" onClick=${addPunch}>Add punch</button>
+            <button class=${`add${rows.length === 0 && editing === null ? " standalone" : ""}`} onClick=${addPunch}>+ Add punch</button>
           </div>
-          ${uncertain > 0 && html`
-            <p class="uncertainnote">
-              ${uncertain} row${uncertain === 1 ? " was" : "s were"} read with low confidence. Verify ${uncertain === 1 ? "it" : "them"} against the card.
-            </p>
-          `}
 
           <div class="totals">
             <div class="tline">
@@ -587,13 +592,17 @@ export function TimeCard() {
           </div>
         </div>
 
+        ${uncertain > 0 && html`
+          <p class="note">${uncertain} row${uncertain === 1 ? "" : "s"} read at low confidence. Verify against the card.</p>
+        `}
+
         <div class="byday">
           ${!!byDay.length && html`
             <h2>By day</h2>
             ${byDay.map((d) => html`
               <div class="daybox" key=${d.date}>
                 <div class="dayhead">
-                  <span>${dayLabel(d.date)}${d.date === today ? " (today)" : ""}</span>
+                  <span>${dayLabel(d.date)}${d.date === today ? " · today" : ""}</span>
                   <button class="copy" onClick=${() => copyDay(d)}>
                     ${copied === d.date ? "Copied" : "Copy"}
                   </button>
@@ -606,17 +615,15 @@ export function TimeCard() {
                       ${s.out.date !== s.in.date ? ` (${dayLabel(s.out.date)})` : ""}
                     </span>
                     <b>${hrs(s.minutes)} h</b>
-                    <span class="mins">${s.minutes} min</span>
                   </div>
                 `)}
                 <div class="daytotal">
                   <span>${d.list.length} shift${d.list.length === 1 ? "" : "s"}</span>
-                  <b>${hrs(d.minutes)} h · ${d.minutes} min</b>
+                  <b>${hrs(d.minutes)} h</b>
                 </div>
                 ${Math.abs(d.sumOfRounded - Number(hrs(d.minutes))) >= 0.005 && html`
-                  <p class="note small">
-                    Rounding each shift individually gives ${d.sumOfRounded.toFixed(2)} h.
-                    Submit ${hrs(d.minutes)} h for a single daily figure.
+                  <p class="note">
+                    Rounding each shift gives ${d.sumOfRounded.toFixed(2)} h. Submit ${hrs(d.minutes)} h for a single daily figure.
                   </p>
                 `}
               </div>
@@ -628,10 +635,30 @@ export function TimeCard() {
           `}
           ${notes.map((n, i) => html`<p class="note" key=${i}>${n}</p>`)}
           ${(punches.length > 0 || other) && html`
-            <button class="btn reset" onClick=${clearCard}>Clear card</button>
+            <button class="btn btn-secondary reset" onClick=${clearCard}>Clear card</button>
           `}
         </div>
       </div>
+
+      ${!lowConfSeen && uncertain > 0 && editing === null && html`
+        <div class="dialog-backdrop">
+          <div class="dialog" role="dialog" aria-modal="true">
+            <div class="dialog-title">Low confidence read</div>
+            <div class="dialog-body">
+              ${uncertain} row${uncertain === 1 ? " was" : "s were"} read at low confidence. Verify against the card before you submit.
+            </div>
+            <div class="dialog-actions">
+              <button class="btn btn-secondary" onClick=${() => setLowConfSeen(true)}>Dismiss</button>
+              <button
+                class="btn btn-primary"
+                onClick=${() => { setLowConfSeen(true); if (lowSlot >= 0) openRow(lowSlot); }}
+              >
+                Review row
+              </button>
+            </div>
+          </div>
+        </div>
+      `}
     </div>
   `;
 }
