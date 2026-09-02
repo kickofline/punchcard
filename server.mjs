@@ -204,7 +204,19 @@ async function readCardImage(image, mimeType, onEvent = () => {}, opts = {}) {
     onEvent("try", { model });
     const { status, body } = await callGemini(model, image, mimeType);
     const ms = Date.now() - t;
-    if (!opts.noMetrics) recordModelCall(model, status === 200, ms);
+    if (!opts.noMetrics) {
+      const kind =
+        status === 200
+          ? "ok"
+          : isQuotaError(status, body)
+            ? "quota"
+            : body && body.error && body.error.status === "DEADLINE"
+              ? "timeout"
+              : shouldFallThrough(status, body)
+                ? "busy"
+                : "error";
+      recordModelCall(model, ms, kind);
+    }
     console.log(`  ${model} ${status} ${ms}ms`);
     if (status === 200) {
       const cand = body.candidates && body.candidates[0];
@@ -213,6 +225,7 @@ async function readCardImage(image, mimeType, onEvent = () => {}, opts = {}) {
         .join("");
       const finish = cand && cand.finishReason;
       if (!opts.models) preferredModel = model;
+      if (!opts.noMetrics) metrics.modelWins.set(model, (metrics.modelWins.get(model) || 0) + 1);
       let punches = [];
       let parseErr = null;
       try {
@@ -285,7 +298,9 @@ const metrics = {
   fallthroughs: 0, // reads that needed > 1 model
   geminiCalls: 0,
   latency: [],
-  models: new Map(), // name -> { calls, ok, fail, ms: [] }
+  recent: [], // last N read outcomes, 1 = non-200, for a rolling error rate
+  models: new Map(), // name -> { calls, ok, fail, quota, busy, timeout, ms: [] }
+  modelWins: new Map(), // name -> reads this model was the one that succeeded
   byDay: new Map(), // "YYYY-MM-DD" -> { reads, ok, zero }
   byHour: new Array(24).fill(0),
   byWeekday: new Array(7).fill(0),
@@ -296,24 +311,31 @@ const metrics = {
   latestOutMin: null,
 };
 
-const ringPush = (arr, v) => {
+const ringPush = (arr, v, cap = RING) => {
   arr.push(v);
-  if (arr.length > RING) arr.shift();
+  if (arr.length > cap) arr.shift();
 };
+const RECENT = 200;
 const dayKey = (ts) => {
   const d = new Date(ts);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 };
 
-function recordModelCall(model, ok, ms) {
+function recordModelCall(model, ms, kind) {
   metrics.geminiCalls++;
   let m = metrics.models.get(model);
   if (!m) {
-    m = { calls: 0, ok: 0, fail: 0, ms: [] };
+    m = { calls: 0, ok: 0, fail: 0, quota: 0, busy: 0, timeout: 0, ms: [] };
     metrics.models.set(model, m);
   }
   m.calls++;
-  ok ? m.ok++ : m.fail++;
+  if (kind === "ok") m.ok++;
+  else {
+    m.fail++;
+    if (kind === "quota") m.quota++;
+    else if (kind === "timeout") m.timeout++;
+    else if (kind === "busy") m.busy++;
+  }
   ringPush(m.ms, ms);
 }
 
@@ -330,6 +352,7 @@ function recordRead(code, ms, punches, extra = {}) {
   else r.upstream++;
 
   ringPush(metrics.latency, ms);
+  ringPush(metrics.recent, code === 200 ? 0 : 1, RECENT);
   metrics.lastReadAt = now;
   metrics.firstReadAt = metrics.firstReadAt || now;
   metrics.bytesProcessed += extra.bytes || 0;
@@ -392,12 +415,27 @@ export function snapshot(now = Date.now()) {
       calls: m.calls,
       ok: m.ok,
       fail: m.fail,
+      quota: m.quota || 0,
+      busy: m.busy || 0,
+      timeout: m.timeout || 0,
+      wins: metrics.modelWins.get(name) || 0,
+      quotaRate: m.calls ? Number(((m.quota || 0) / m.calls).toFixed(3)) : 0,
+      busyRate: m.calls ? Number((((m.busy || 0) + (m.timeout || 0)) / m.calls).toFixed(3)) : 0,
       p50_ms: percentile(s, 50),
       p95_ms: percentile(s, 95),
     };
   }
+  const modelWins = {};
+  for (const [n, c] of [...metrics.modelWins.entries()].sort((a, b) => b[1] - a[1])) modelWins[n] = c;
+  const recent = metrics.recent;
+  const errRate = (n) => {
+    const w = n ? recent.slice(-n) : recent;
+    return w.length ? Number((w.reduce((a, b) => a + b, 0) / w.length).toFixed(3)) : 0;
+  };
   const byDay = {};
-  for (const [k, d] of [...metrics.byDay.entries()].sort()) byDay[k] = d;
+  for (const [k, d] of [...metrics.byDay.entries()].sort()) {
+    byDay[k] = { ...d, err: d.reads - d.ok };
+  }
   const perCard = {};
   for (const [n, c] of [...metrics.punchesPerCard.entries()].sort((a, b) => a[0] - b[0])) perCard[n] = c;
   const weekday = {};
@@ -439,6 +477,15 @@ export function snapshot(now = Date.now()) {
     modelFallthroughRate: metrics.reads.ok
       ? Number((metrics.fallthroughs / metrics.reads.ok).toFixed(3))
       : 0,
+    errorRate: {
+      last20: errRate(20),
+      last100: errRate(100),
+      allTime: metrics.reads.total
+        ? Number(((metrics.reads.total - metrics.reads.ok) / metrics.reads.total).toFixed(3))
+        : 0,
+      window: recent.length,
+    },
+    modelWins,
     dataProcessedMB: Number(((metrics.bytesProcessed * 0.75) / 1e6).toFixed(2)),
 
     latencyMs: {
@@ -474,7 +521,9 @@ function serializeStats() {
     fallthroughs: metrics.fallthroughs,
     geminiCalls: metrics.geminiCalls,
     latency: metrics.latency,
+    recent: metrics.recent,
     models: [...metrics.models.entries()],
+    modelWins: [...metrics.modelWins.entries()],
     byDay: [...metrics.byDay.entries()],
     byHour: metrics.byHour,
     byWeekday: metrics.byWeekday,
@@ -504,7 +553,14 @@ function loadStats() {
     metrics.fallthroughs = d.fallthroughs || 0;
     metrics.geminiCalls = d.geminiCalls || 0;
     metrics.latency = Array.isArray(d.latency) ? d.latency.slice(-RING) : [];
-    metrics.models = new Map(d.models || []);
+    metrics.recent = Array.isArray(d.recent) ? d.recent.slice(-RECENT) : [];
+    metrics.models = new Map(
+      (d.models || []).map(([k, m]) => [
+        k,
+        { calls: 0, ok: 0, fail: 0, quota: 0, busy: 0, timeout: 0, ms: [], ...m },
+      ])
+    );
+    metrics.modelWins = new Map(d.modelWins || []);
     metrics.byDay = new Map(d.byDay || []);
     metrics.byHour = Array.isArray(d.byHour) && d.byHour.length === 24 ? d.byHour : new Array(24).fill(0);
     metrics.byWeekday =
@@ -664,24 +720,44 @@ async function handleRead(req, res) {
 
 function statsHtml(s) {
   const row = (k, v) => `<tr><td>${k}</td><td>${v}</td></tr>`;
+  const pct = (x) => (x * 100).toFixed(1) + "%";
   const models = Object.entries(s.models)
     .map(
       ([n, m]) =>
-        `<tr><td>${n}</td><td>${m.calls}</td><td>${m.ok}</td><td>${m.fail}</td><td>${m.p50_ms}</td><td>${m.p95_ms}</td></tr>`
+        `<tr><td>${n}</td><td>${m.calls}</td><td>${m.ok}</td><td>${m.wins}</td><td>${m.quota}</td><td>${m.busy}</td><td>${m.timeout}</td><td>${pct(m.quotaRate)}</td><td>${pct(m.busyRate)}</td><td>${m.p50_ms}</td><td>${m.p95_ms}</td></tr>`
     )
     .join("");
   const barRow = (label, val, max) =>
     `<div class="d"><span class="k">${label}</span><span class="bar" style="width:${Math.round(
       (val / Math.max(1, max)) * 100
     )}%"></span><span class="n">${val}</span></div>`;
+  const spark = (vals) => {
+    const c = "▁▂▃▄▅▆▇█";
+    const max = Math.max(1, ...vals);
+    return vals.map((v) => c[Math.min(7, Math.round((v / max) * 7))]).join("") || "-";
+  };
+  const winEntries = Object.entries(s.modelWins);
+  const winMax = Math.max(1, ...winEntries.map(([, v]) => v));
+  const winTotal = winEntries.reduce((a, [, v]) => a + v, 0) || 1;
+  const winBars = winEntries
+    .map(
+      ([n, v]) =>
+        `<div class="d"><span class="k">${n}</span><span class="bar" style="width:${Math.round(
+          (v / winMax) * 100
+        )}%"></span><span class="n">${v} (${((v / winTotal) * 100).toFixed(0)}%)</span></div>`
+    )
+    .join("");
   const days = Object.entries(s.byDay);
+  const last30 = days.slice(-30);
+  const readsSpark = spark(last30.map(([, d]) => d.reads));
+  const errSpark = spark(last30.map(([, d]) => (d.reads ? (d.err / d.reads) * 100 : 0)));
   const maxReads = Math.max(1, ...days.map(([, d]) => d.reads));
   const dayBars = days
     .map(
       ([k, d]) =>
         `<div class="d"><span class="k">${k}</span><span class="bar" style="width:${Math.round(
           (d.reads / maxReads) * 100
-        )}%"></span><span class="n">${d.reads} r / ${d.ok} ok / ${d.zero} zero</span></div>`
+        )}%"></span><span class="n">${d.reads} r / ${d.ok} ok / ${d.err} err / ${d.zero} zero</span></div>`
     )
     .join("");
   const hourMax = Math.max(1, ...s.byHour);
@@ -709,6 +785,8 @@ th{background:#f3f2f2;font-size:11px;text-transform:uppercase;letter-spacing:.04
 .d .k{width:110px;flex:none}
 .d .bar{height:12px;background:var(--red);flex:none;min-width:2px}
 .d .n{color:#605d5d}
+.spark{font-size:22px;letter-spacing:3px;line-height:1;margin:6px 0;color:var(--red)}
+.spark .lbl{display:block;font-size:11px;letter-spacing:.04em;color:#605d5d;margin-top:2px}
 </style>
 <h1>punchcard / ops</h1>
 <table>
@@ -732,11 +810,17 @@ ${row("avg confidence", s.avgConfidence ?? "-")}
 ${row("low-confidence rate", s.lowConfidenceRate)}
 ${row("gemini calls", s.geminiCalls)}
 ${row("model fallthrough rate", s.modelFallthroughRate)}
+${row("error rate  last20 / last100 / all", [pct(s.errorRate.last20), pct(s.errorRate.last100), pct(s.errorRate.allTime)].join(" / ") + "  (n=" + s.errorRate.window + ")")}
 ${row("data processed (MB)", s.dataProcessedMB)}
 ${row("latency p50 / p95 / max ms", s.latencyMs.p50 + " / " + s.latencyMs.p95 + " / " + s.latencyMs.max)}
 </table>
+<h2>Which model got the read</h2>
+${winBars || "<p>none yet</p>"}
 <h2>Models</h2>
-<table><tr><th>model</th><th>calls</th><th>ok</th><th>fail</th><th>p50 ms</th><th>p95 ms</th></tr>${models || '<tr><td colspan=6>none yet</td></tr>'}</table>
+<table><tr><th>model</th><th>calls</th><th>ok</th><th>wins</th><th>quota</th><th>busy</th><th>t/o</th><th>quota %</th><th>busy %</th><th>p50 ms</th><th>p95 ms</th></tr>${models || '<tr><td colspan=11>none yet</td></tr>'}</table>
+<h2>Reads / day (last 30)</h2>
+<div class="spark">${readsSpark}<span class="lbl">reads per day</span></div>
+<div class="spark">${errSpark}<span class="lbl">error rate per day</span></div>
 <h2>Reads by day</h2>
 ${dayBars || "<p>none yet</p>"}
 <h2>Reads by hour</h2>

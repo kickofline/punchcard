@@ -16,8 +16,9 @@ a misread is a quick fix.
   **and** exposes `POST /api/read`, which relays the photo to the Google Gemini
   vision API. The API key lives only on the server, never in the browser.
   Also serves `GET /healthz` and `GET /stats` (JSON, or `?html=1` for a page)
-  with in-memory usage metrics — read counts, per-model latency, per-day
-  volume; resets on restart.
+  with usage metrics — read counts, rolling error rate, per-model
+  latency / quota / busy counts, which model actually got each read, and
+  per-day volume and error sparklines. Persisted to `STATS_FILE`.
 
 ## Run locally
 

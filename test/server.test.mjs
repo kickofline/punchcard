@@ -52,11 +52,19 @@ test("snapshot returns the expected shape on a fresh server", () => {
     "byHour",
     "byWeekday",
     "punchesPerCard",
+    "errorRate",
+    "modelWins",
   ]) {
     assert.ok(k in s, `snapshot has ${k}`);
   }
   assert.equal(s.byHour.length, 24);
   assert.equal(Object.keys(s.byWeekday).length, 7);
+  assert.deepEqual(Object.keys(s.errorRate).sort(), [
+    "allTime",
+    "last100",
+    "last20",
+    "window",
+  ]);
 });
 
 /* ------------------------------- staticTarget ---------------------------- */

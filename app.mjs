@@ -789,6 +789,7 @@ export function TimeCard() {
           The times here are read from your photo by an AI, and it can misread a faint or
           crooked stamp. Look over every row against the card before you turn in your hours.
         </p>
+        <p class="footlink"><a href="/stats">Usage stats</a></p>
       </div>
 
       ${!lowConfSeen && uncertain > 0 && editing === null && html`
