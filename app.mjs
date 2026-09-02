@@ -314,7 +314,7 @@ async function readCardImage(dataURL, onStep = () => {}, opts = {}) {
     }
     throw new Error("No stamped rows were read. Get closer, fill the frame, and keep glare off the card.");
   }
-  return found;
+  return { punches: found, contribId: result.contribId || null };
 }
 
 /* ---------------------------------- view ---------------------------------- */
@@ -338,6 +338,8 @@ export function TimeCard() {
   const [torchState, setTorchState] = useState({ supported: false, on: false });
   const [privacy, setPrivacy] = useState(false);
   const [contribute, setContribute] = useState(true);
+  const [lowLight, setLowLight] = useState(false);
+  const [pending, setPending] = useState(null); // { src, from } awaiting "use / retake"
 
   function copyAndLog(text, key) {
     copy(text, key);
@@ -379,6 +381,9 @@ export function TimeCard() {
   const overlay = useRef(null); // canvas that draws the detected card outline
   const torchTrack = useRef(null);
   const scan = useRef(null); // live-scan working state (see the camera effect)
+  const lastRead = useRef(null); // { id, freshSlots, baseline, edits, reported } for edit reporting
+  const punchesRef = useRef([]); // latest punches, readable from non-render callbacks
+  const reportTimer = useRef(0);
 
   useEffect(() => {
     (async () => {
@@ -422,6 +427,76 @@ export function TimeCard() {
     if (!punches.length && !other) return;
     storage.set("timecard:v1", JSON.stringify({ punches, other }));
   }, [punches, other]);
+
+  useEffect(() => {
+    punchesRef.current = punches;
+  }, [punches]);
+
+  /* Tell the server the final state of a shared read: which of the freshly
+     read rows the user changed, and to what. Best training signal there is. */
+  const flushReport = useCallback(() => {
+    const lr = lastRead.current;
+    if (!lr || !lr.id || lr.reported) return;
+    lr.reported = true;
+    clearTimeout(reportTimer.current);
+    const body = JSON.stringify({
+      id: lr.id,
+      editedRows: lr.edits.length,
+      edits: lr.edits,
+      punches: layout(punchesRef.current).filter(Boolean),
+    });
+    try {
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon("/api/correction", new Blob([body], { type: "application/json" }));
+      } else {
+        fetch("/api/correction", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body,
+          keepalive: true,
+        }).catch(() => {});
+      }
+    } catch (e) { /* offline / blocked - fine */ }
+  }, []);
+
+  /* While a shared read is still "live", keep its edit list current by diffing
+     the fresh rows against what the model returned. */
+  useEffect(() => {
+    const lr = lastRead.current;
+    if (!lr || !lr.id || lr.reported) return;
+    const g = layout(punches);
+    lr.edits = lr.freshSlots
+      .map((slot) => {
+        const was = lr.baseline[slot] || null;
+        const c = g[slot];
+        const now = c ? { type: c.type, date: c.date, time: c.time } : null;
+        const same =
+          !was === !now &&
+          (!was || (was.type === now.type && was.date === now.date && was.time === now.time));
+        return same ? null : { slot, was, now };
+      })
+      .filter(Boolean);
+  }, [punches]);
+
+  useEffect(() => {
+    const onHide = () => {
+      if (document.visibilityState === "hidden") flushReport();
+    };
+    window.addEventListener("pagehide", flushReport);
+    document.addEventListener("visibilitychange", onHide);
+    return () => {
+      window.removeEventListener("pagehide", flushReport);
+      document.removeEventListener("visibilitychange", onHide);
+      flushReport();
+    };
+  }, [flushReport]);
+
+  useEffect(() => {
+    const a = new URLSearchParams(location.search).get("action");
+    if (a === "scan") openCamera();
+    else if (a === "punch") punchNow();
+    if (a) history.replaceState(null, "", location.pathname);
+  }, []);
 
   useEffect(() => {
     if (status !== "reading") {
@@ -564,7 +639,24 @@ export function TimeCard() {
     }
     if (!c) c = toCanvas(v, v.videoWidth, v.videoHeight, 1600);
     stopCamera();
-    await send({ src: shotURL(c) });
+    setPending({ src: shotURL(c), from: "camera" });
+    setStatus("confirm");
+  }
+
+  function confirmUse() {
+    const p = pending;
+    setPending(null);
+    if (p) send({ src: p.src });
+  }
+  function confirmRedo() {
+    const from = pending?.from;
+    setPending(null);
+    if (from === "file") library.current?.click();
+    else openCamera();
+  }
+  function confirmCancel() {
+    setPending(null);
+    setStatus("idle");
   }
 
   /* Live scanner: while the camera is open, sample small frames, find the
@@ -598,9 +690,15 @@ export function TimeCard() {
       }
       const d = img.data;
       const gray = new Uint8ClampedArray(bw * bh);
+      let lsum = 0;
       for (let i = 0, j = 0; i < d.length; i += 4, j++) {
-        gray[j] = (d[i] * 77 + d[i + 1] * 150 + d[i + 2] * 29) >> 8;
+        const g = (d[i] * 77 + d[i + 1] * 150 + d[i + 2] * 29) >> 8;
+        gray[j] = g;
+        lsum += g;
       }
+      // dim scene for a while -> suggest the torch (only if it's available)
+      st.dark = lsum / gray.length < 60 ? (st.dark || 0) + 1 : 0;
+      setLowLight(torchState.supported && !torchState.on && st.dark > 12);
       const quad = detectCard(gray, bw, bh);
       st.quad = quad;
 
@@ -661,7 +759,7 @@ export function TimeCard() {
       } catch (e) { /* canvas gone */ }
       setHint("");
     };
-  }, [status]);
+  }, [status, torchState.supported, torchState.on]);
 
   async function onFile(e) {
     const file = e.target.files?.[0];
@@ -670,7 +768,8 @@ export function TimeCard() {
     setError("");
     try {
       const s = await loadShot(file);
-      await send(s);
+      setPending({ src: s.src, from: "file" });
+      setStatus("confirm");
     } catch (err) {
       setError(err.message || "That photo could not be read.");
       setStatus("idle");
@@ -700,13 +799,29 @@ export function TimeCard() {
     setReadMsg("Sending the photo…");
     setError("");
     try {
-      const found = await readCardImage(s.src, setReadMsg, {
+      const { punches: found, contribId } = await readCardImage(s.src, setReadMsg, {
         contribute: !opts.sample && contribute,
         ...opts,
       });
       const merged = layout([...punches, ...found]);
       const keys = new Set(found.map((p) => `${p.type}|${p.date}|${p.time}`));
-      setFresh(merged.map((p, i) => (p && keys.has(`${p.type}|${p.date}|${p.time}`) ? i : -1)).filter((i) => i >= 0));
+      const freshSlots = [];
+      const baseline = {};
+      merged.forEach((p, i) => {
+        if (p && keys.has(`${p.type}|${p.date}|${p.time}`)) {
+          freshSlots.push(i);
+          baseline[i] = { type: p.type, date: p.date, time: p.time };
+        }
+      });
+      flushReport(); // close out the previous shared read, if any
+      lastRead.current = contribId
+        ? { id: contribId, freshSlots, baseline, edits: [], reported: false }
+        : null;
+      if (lastRead.current) {
+        clearTimeout(reportTimer.current);
+        reportTimer.current = setTimeout(flushReport, 25000);
+      }
+      setFresh(freshSlots);
       setPunches(merged.filter(Boolean));
       setShot(null);
       setStatus("idle");
@@ -771,7 +886,7 @@ export function TimeCard() {
       ${status === "camera" && html`
         <div class="stage">
           <div class="stagebar">
-            <span>${hint || "Align the card"}</span>
+            <span>${lowLight && !hint ? "Dim — tap Light" : hint || "Align the card"}</span>
             <button class="x" onClick=${() => { stopCamera(); setStatus("idle"); }}>Cancel</button>
           </div>
           <div class="stagebody">
@@ -781,7 +896,7 @@ export function TimeCard() {
               <div class="guide">
                 <span class="tl"></span><span class="tr"></span><span class="bl"></span><span class="br"></span>
               </div>
-              ${hint && html`<div class="hint">${hint}</div>`}
+              ${(hint || lowLight) && html`<div class="hint">${lowLight ? "Low light — tap Light" : hint}</div>`}
             </div>
           </div>
           <div class="shutterbar">
@@ -793,7 +908,7 @@ export function TimeCard() {
             ></button>
             ${torchState.supported
               ? html`<button
-                  class=${`chip ${torchState.on ? "on" : ""}`}
+                  class=${`chip ${torchState.on ? "on" : ""} ${lowLight ? "attn" : ""}`}
                   onClick=${toggleTorch}
                   aria-pressed=${torchState.on}
                 >Light</button>`
@@ -805,6 +920,26 @@ export function TimeCard() {
             <button class="linklike" onClick=${() => setPrivacy(true)}>Details</button>
           </p>
           <canvas ref=${sampler} class="probe" aria-hidden="true"></canvas>
+        </div>
+      `}
+
+      ${status === "confirm" && pending && html`
+        <div class="stage">
+          <div class="stagebar">
+            <span>Whole card, in focus?</span>
+            <button class="x" onClick=${confirmCancel}>Cancel</button>
+          </div>
+          <div class="stagebody">
+            <div class="frame">
+              <img src=${pending.src} alt="Photo you just took" />
+            </div>
+          </div>
+          <div class="shutterbar confirmbar">
+            <button class="chip" onClick=${confirmRedo}>
+              ${pending.from === "file" ? "Choose another" : "Retake"}
+            </button>
+            <button class="btn btn-primary usebtn" onClick=${confirmUse}>Use this photo</button>
+          </div>
         </div>
       `}
 

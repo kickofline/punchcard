@@ -21,8 +21,13 @@ a misread is a quick fix.
   vision API. The API key lives only on the server, never in the browser.
   Also serves `GET /healthz` and `GET /stats` (JSON, or `?html=1` for a page)
   with usage metrics — read counts, rolling error rate, per-model
-  latency / quota / busy counts, which model actually got each read, and
-  per-day volume and error sparklines. Persisted to `STATS_FILE`.
+  latency / quota / busy counts, which model actually got each read,
+  per-day volume and error sparklines, and read-accuracy figures fed by
+  client edit reports (`POST /api/correction`). Persisted to `STATS_FILE`.
+  Each read also logs one greppable `read key=value …` line.
+- **`GET /contrib`** — a review page for the opted-in samples (image +
+  model output, suspect-first sorting, mark ok/wrong, export a labeled
+  NDJSON set). Gated by `CONTRIB_TOKEN`; localhost-only when that's unset.
 
 ## Run locally
 

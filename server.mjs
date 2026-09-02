@@ -13,6 +13,8 @@
                         STATS_FILE). Set CONTRIB_DIR= (empty) to disable.
      CONTRIB_MAX        keep at most this many samples, oldest deleted first
                         (default 3000)
+     CONTRIB_TOKEN      gate the /contrib review page + its endpoints; when
+                        unset those are reachable only from localhost
      PORT               default 3000
      HOST               default 0.0.0.0 (all interfaces); 127.0.0.1 for local only
 */
@@ -41,6 +43,7 @@ const STATS_FILE = process.env.STATS_FILE || join(ROOT, ".stats.json");
 const CONTRIB_DIR =
   process.env.CONTRIB_DIR ?? join(dirname(STATS_FILE), "contrib");
 const CONTRIB_MAX = Number(process.env.CONTRIB_MAX || 3000);
+const CONTRIB_TOKEN = process.env.CONTRIB_TOKEN || ""; // gate /contrib; blank = loopback only
 const API_KEY = process.env.GEMINI_API_KEY || "";
 const MODELS = (
   process.env.GEMINI_MODEL ||
@@ -97,6 +100,53 @@ export function validateReadBody(body) {
   // reader output to improve accuracy; never for the built-in sample card
   const contribute = !sample && !!(body && body.contribute === true);
   return { image, mimeType, clientId, sample, contribute };
+}
+
+/* Contribution ids are a timestamp + short suffix; keep any lookup strictly to
+   that shape so a request can't walk out of CONTRIB_DIR. */
+export function safeId(s) {
+  return typeof s === "string" && /^[0-9TZ:.\-]{20,32}_[a-z0-9]{4,10}$/.test(s) ? s : null;
+}
+
+/* Why a read looks worth a human's eyes, plus a weight to sort the queue by. */
+export function suspectFlags(punches, finish) {
+  const flags = [];
+  const list = Array.isArray(punches) ? punches : [];
+  if (!list.length) flags.push("zero-punch");
+  else {
+    if (list.length < 2) flags.push("few-punches");
+    if (list.some((p) => p && p.confidence != null && p.confidence < 0.6)) flags.push("low-conf");
+    try {
+      const { shifts, notes } = readCard(layout(list));
+      if (notes && notes.length) flags.push("pair-note");
+      if (shifts.some((s) => s.bad)) flags.push("bad-shift");
+      if (shifts.some((s) => s.out && s.minutes > 16 * 60)) flags.push("long-shift");
+    } catch {
+      flags.push("pair-fail");
+    }
+  }
+  if (finish && !/^stop$/i.test(String(finish))) flags.push("truncated");
+  const w = {
+    "zero-punch": 5,
+    "pair-fail": 4,
+    "bad-shift": 3,
+    "pair-note": 2,
+    "low-conf": 2,
+    "long-shift": 2,
+    truncated: 2,
+    "few-punches": 1,
+  };
+  const score = flags.reduce((n, f) => n + (w[f] || 1), 0);
+  return { flags, score };
+}
+
+/* A compact "what changed" key for one corrected row, for the misread tally. */
+export function misreadKey(was, now) {
+  if (!was || !now) return null;
+  if (was.type !== now.type) return `${was.type}->${now.type}`;
+  if (was.time !== now.time) return `${was.time}->${now.time}`;
+  if (was.date !== now.date) return "date";
+  return null;
 }
 
 export function isQuotaError(status, body) {
@@ -316,6 +366,10 @@ const metrics = {
   bytesProcessed: 0, // base64 chars processed
   fallthroughs: 0, // reads that needed > 1 model
   contributed: 0, // reads whose photo + output the user let us keep
+  contribReports: 0, // contributed reads the client later reported a final state for
+  contribEditedReads: 0, // ...of those, how many had at least one row edited
+  contribLabeled: 0, // contributed reads a reviewer has marked ok / bad
+  misreads: new Map(), // "was->now" -> count, from reported edits
   geminiCalls: 0,
   latency: [],
   recent: [], // last N read outcomes, 1 = non-200, for a rolling error rate
@@ -507,6 +561,17 @@ export function snapshot(now = Date.now()) {
     },
     modelWins,
     contributedSamples: metrics.contributed,
+    accuracy: {
+      reportedReads: metrics.contribReports,
+      editedReads: metrics.contribEditedReads,
+      cleanRate: metrics.contribReports
+        ? Number(
+            ((metrics.contribReports - metrics.contribEditedReads) / metrics.contribReports).toFixed(3)
+          )
+        : null,
+      labeled: metrics.contribLabeled,
+      topMisreads: [...metrics.misreads.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12),
+    },
     dataProcessedMB: Number(((metrics.bytesProcessed * 0.75) / 1e6).toFixed(2)),
 
     latencyMs: {
@@ -541,6 +606,10 @@ function serializeStats() {
     bytesProcessed: metrics.bytesProcessed,
     fallthroughs: metrics.fallthroughs,
     contributed: metrics.contributed,
+    contribReports: metrics.contribReports,
+    contribEditedReads: metrics.contribEditedReads,
+    contribLabeled: metrics.contribLabeled,
+    misreads: [...metrics.misreads.entries()],
     geminiCalls: metrics.geminiCalls,
     latency: metrics.latency,
     recent: metrics.recent,
@@ -574,6 +643,10 @@ function loadStats() {
     metrics.bytesProcessed = d.bytesProcessed || 0;
     metrics.fallthroughs = d.fallthroughs || 0;
     metrics.contributed = d.contributed || 0;
+    metrics.contribReports = d.contribReports || 0;
+    metrics.contribEditedReads = d.contribEditedReads || 0;
+    metrics.contribLabeled = d.contribLabeled || 0;
+    metrics.misreads = new Map(d.misreads || []);
     metrics.geminiCalls = d.geminiCalls || 0;
     metrics.latency = Array.isArray(d.latency) ? d.latency.slice(-RING) : [];
     metrics.recent = Array.isArray(d.recent) ? d.recent.slice(-RECENT) : [];
@@ -658,43 +731,72 @@ function trimContrib() {
   }
 }
 
+const contribPath = (id, ext) => join(CONTRIB_DIR, `${id}.${ext}`);
+
+function readContrib(id) {
+  try {
+    return JSON.parse(readFileSync(contribPath(id, "json"), "utf8"));
+  } catch {
+    return null;
+  }
+}
+function writeContrib(id, obj) {
+  try {
+    writeFileSync(contribPath(id, "json"), JSON.stringify(obj, null, 2));
+    return true;
+  } catch (e) {
+    console.log("contrib: update failed -", e.message);
+    return false;
+  }
+}
+function bumpMisread(key) {
+  if (!key) return;
+  metrics.misreads.set(key, (metrics.misreads.get(key) || 0) + 1);
+  if (metrics.misreads.size > 300) {
+    const lowest = [...metrics.misreads.entries()].sort((a, b) => a[1] - b[1])[0];
+    if (lowest) metrics.misreads.delete(lowest[0]);
+  }
+}
+
 /* Persist one opted-in read: the raw photo plus what the model returned.
-   Fire-and-forget; a failure here must never affect the response. */
+   Fire-and-forget; a failure here must never affect the response. Returns the
+   id so the client can attach follow-up edits (POST /api/correction). */
 function storeContribution({ image, mimeType, clientId, model, attempts, ms, punches, raw, finish }) {
-  if (!ensureContribDir()) return;
+  if (!ensureContribDir()) return null;
   try {
     const id =
       new Date().toISOString().replace(/[:.]/g, "-") +
       "_" +
       Math.random().toString(36).slice(2, 8);
     const ext = EXT_FOR[mimeType] || "bin";
-    writeFileSync(join(CONTRIB_DIR, `${id}.${ext}`), Buffer.from(image, "base64"));
-    writeFileSync(
-      join(CONTRIB_DIR, `${id}.json`),
-      JSON.stringify(
-        {
-          id,
-          at: new Date().toISOString(),
-          clientId: clientId || null,
-          model: model || null,
-          attempts: attempts || 1,
-          ms: ms || null,
-          mimeType,
-          bytes: Buffer.byteLength(image, "base64"),
-          punchCount: punches.length,
-          punches,
-          finish: finish || null,
-          rawText: typeof raw === "string" ? raw.slice(0, 4000) : null,
-        },
-        null,
-        2
-      )
-    );
+    const { flags, score } = suspectFlags(punches, finish);
+    writeFileSync(contribPath(id, ext), Buffer.from(image, "base64"));
+    writeContrib(id, {
+      id,
+      at: new Date().toISOString(),
+      clientId: clientId || null,
+      model: model || null,
+      attempts: attempts || 1,
+      ms: ms || null,
+      mimeType,
+      ext,
+      bytes: Buffer.byteLength(image, "base64"),
+      punchCount: punches.length,
+      punches,
+      finish: finish || null,
+      rawText: typeof raw === "string" ? raw.slice(0, 4000) : null,
+      flags,
+      suspectScore: score,
+      report: null, // filled by POST /api/correction
+      label: null, // filled by the /contrib review page
+    });
     metrics.contributed++;
     scheduleSave();
     if (metrics.contributed % 25 === 0) trimContrib();
+    return id;
   } catch (e) {
     console.log("contrib: write failed -", e.message);
+    return null;
   }
 }
 
@@ -741,6 +843,16 @@ const sendJson = (res, code, obj) => {
   res.writeHead(code, { "Content-Type": "application/json" });
   res.end(JSON.stringify(obj));
 };
+
+/* One greppable key=value line per read. */
+function logRead(o) {
+  const parts = [];
+  for (const [k, v] of Object.entries(o)) {
+    if (v === null || v === undefined || v === false) continue;
+    parts.push(`${k}=${typeof v === "string" && /[\s"]/.test(v) ? JSON.stringify(v) : v}`);
+  }
+  console.log("read " + parts.join(" "));
+}
 
 async function handleRead(req, res) {
   if (!API_KEY) return sendJson(res, 500, { error: "server is missing GEMINI_API_KEY" });
@@ -800,12 +912,10 @@ async function handleRead(req, res) {
       readOpts
     );
     const ms = Date.now() - t0;
-    console.log(
-      `/api/read done${clean.sample ? " [sample]" : ""}${clean.contribute ? " [shared]" : ""}  ${model}  ${punches.length} punches  ${ms}ms`
-    );
     if (!clean.sample) recordRead(200, ms, punches, { bytes, attempts, clientId: clean.clientId });
+    let contribId = null;
     if (clean.contribute) {
-      storeContribution({
+      contribId = storeContribution({
         image: clean.image,
         mimeType: clean.mimeType,
         clientId: clean.clientId,
@@ -817,7 +927,20 @@ async function handleRead(req, res) {
         finish,
       });
     }
+    logRead({
+      id: contribId,
+      code: 200,
+      model,
+      ms,
+      punches: punches.length,
+      attempts,
+      sample: clean.sample,
+      contributed: !!contribId,
+      client: clean.clientId,
+      flags: suspectFlags(punches, finish).flags.join(",") || null,
+    });
     const done = { punches, model };
+    if (contribId) done.contribId = contribId;
     if (!punches.length) {
       done.finish = finish || null;
       done.raw = String(raw || "").slice(0, 600); // what the model actually said
@@ -825,11 +948,300 @@ async function handleRead(req, res) {
     emit("done", done);
   } catch (e) {
     const ms = Date.now() - t0;
-    console.log(`/api/read error${clean.sample ? " [sample]" : ""}  ${ms}ms  ${e.message || e}`);
     if (!clean.sample) recordRead(e.busy ? 503 : 502, ms, [], { bytes, clientId: clean.clientId });
+    logRead({
+      id: null,
+      code: e.busy ? 503 : 502,
+      model: null,
+      ms,
+      punches: 0,
+      sample: clean.sample,
+      contributed: false,
+      client: clean.clientId,
+      error: e.message || String(e),
+    });
     emit("error", { error: e.message || String(e), busy: !!e.busy });
   }
   res.end();
+}
+
+/* -------------------- corrections + /contrib review ------------------- */
+
+async function readBody(req, cap = 2 * 1024 * 1024) {
+  let raw = "";
+  for await (const chunk of req) {
+    raw += chunk;
+    if (raw.length > cap) throw new Error("body too large");
+  }
+  return raw ? JSON.parse(raw) : {};
+}
+
+const cleanPunch = (p) =>
+  p && typeof p === "object"
+    ? {
+        type: p.type === "OUT" ? "OUT" : "IN",
+        date: /^\d{4}-\d{2}-\d{2}$/.test(p.date) ? p.date : "",
+        time: /^\d{2}:\d{2}$/.test(p.time) ? p.time : "",
+        ...(p.confidence != null ? { confidence: Math.max(0, Math.min(1, Number(p.confidence) || 0)) } : {}),
+      }
+    : null;
+
+/* The client tells us the final state of a contributed read once the user is
+   done with it: which rows they changed, and to what. Best signal we get. */
+async function handleCorrection(req, res) {
+  let body;
+  try {
+    body = await readBody(req, 512 * 1024);
+  } catch {
+    return sendJson(res, 400, { error: "bad body" });
+  }
+  const id = safeId(body && body.id);
+  if (!id) return sendJson(res, 400, { error: "bad id" });
+  const rec = readContrib(id);
+  if (!rec) return sendJson(res, 404, { error: "unknown id" });
+  if (rec.report) return sendJson(res, 200, { ok: true, note: "already reported" });
+
+  const edits = Array.isArray(body.edits) ? body.edits.slice(0, 60) : [];
+  const finalPunches = Array.isArray(body.punches)
+    ? body.punches.map(cleanPunch).filter((p) => p && p.date && p.time).slice(0, 60)
+    : [];
+  const editedRows = edits.length;
+
+  rec.report = {
+    at: new Date().toISOString(),
+    editedRows,
+    punches: finalPunches,
+    edits: edits.map((e) => ({
+      slot: Number.isInteger(e && e.slot) ? e.slot : null,
+      was: cleanPunch(e && e.was),
+      now: cleanPunch(e && e.now),
+    })),
+  };
+  writeContrib(id, rec);
+
+  metrics.contribReports++;
+  if (editedRows > 0) metrics.contribEditedReads++;
+  for (const e of rec.report.edits) bumpMisread(misreadKey(e.was, e.now));
+  scheduleSave();
+  res.writeHead(204).end();
+}
+
+function contribAuthed(req) {
+  if (!CONTRIB_DIR) return false;
+  const url = new URL(req.url, "http://x");
+  const t =
+    url.searchParams.get("token") || (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+  if (CONTRIB_TOKEN) return t === CONTRIB_TOKEN;
+  const ra = req.socket.remoteAddress || "";
+  return ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(ra);
+}
+const contribDeny = (res) =>
+  res.writeHead(CONTRIB_DIR ? 403 : 404, { "Content-Type": "text/plain" }).end(
+    CONTRIB_DIR ? "forbidden - set CONTRIB_TOKEN and pass ?token=" : "not found"
+  );
+
+function listContrib(limit = 40, offset = 0) {
+  let files;
+  try {
+    files = readdirSync(CONTRIB_DIR).filter((f) => f.endsWith(".json"));
+  } catch {
+    return { items: [], total: 0 };
+  }
+  files.sort().reverse(); // ids start with an ISO timestamp -> newest first
+  const total = files.length;
+  const items = [];
+  for (const f of files.slice(offset, offset + limit)) {
+    const rec = readContrib(f.replace(/\.json$/, ""));
+    if (rec) items.push(rec);
+  }
+  return { items, total };
+}
+
+function handleContribList(req, res) {
+  if (!contribAuthed(req)) return contribDeny(res);
+  const url = new URL(req.url, "http://x");
+  const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") || 40)));
+  const offset = Math.max(0, Number(url.searchParams.get("offset") || 0));
+  const sort = url.searchParams.get("sort");
+  const { items, total } = listContrib(sort === "suspect" ? 500 : limit, sort === "suspect" ? 0 : offset);
+  let out = items;
+  if (sort === "suspect") {
+    out = items
+      .filter((r) => !r.label)
+      .sort((a, b) => (b.suspectScore || 0) - (a.suspectScore || 0))
+      .slice(0, limit);
+  }
+  sendJson(res, 200, { total, count: out.length, items: out });
+}
+
+function handleContribAsset(req, res) {
+  if (!contribAuthed(req)) return contribDeny(res);
+  const id = safeId(decodeURIComponent((req.url.split("?")[0].split("/").pop() || "").replace(/\.[a-z0-9]+$/i, "")));
+  const rec = id && readContrib(id);
+  if (!rec) return res.writeHead(404).end("not found");
+  try {
+    const buf = readFileSync(contribPath(id, rec.ext || "jpg"));
+    res.writeHead(200, { "Content-Type": rec.mimeType || "image/jpeg", "Cache-Control": "private, max-age=600" });
+    res.end(buf);
+  } catch {
+    res.writeHead(404).end("not found");
+  }
+}
+
+async function handleContribLabel(req, res) {
+  if (!contribAuthed(req)) return contribDeny(res);
+  let body;
+  try {
+    body = await readBody(req, 512 * 1024);
+  } catch {
+    return sendJson(res, 400, { error: "bad body" });
+  }
+  const id = safeId(body && body.id);
+  if (!id) return sendJson(res, 400, { error: "bad id" });
+  const rec = readContrib(id);
+  if (!rec) return sendJson(res, 404, { error: "unknown id" });
+  const verdict = body.verdict === "bad" ? "bad" : body.verdict === "ok" ? "ok" : null;
+  if (!verdict) return sendJson(res, 400, { error: "verdict must be ok or bad" });
+  const wasLabeled = !!rec.label;
+  rec.label = {
+    at: new Date().toISOString(),
+    verdict,
+    punches: Array.isArray(body.punches)
+      ? body.punches.map(cleanPunch).filter((p) => p && p.date && p.time).slice(0, 60)
+      : rec.punches,
+  };
+  writeContrib(id, rec);
+  if (!wasLabeled) metrics.contribLabeled++;
+  scheduleSave();
+  sendJson(res, 200, { ok: true });
+}
+
+function handleContribExport(req, res) {
+  if (!contribAuthed(req)) return contribDeny(res);
+  const { items } = listContrib(100000, 0);
+  const lines = items
+    .filter((r) => r.label)
+    .map((r) =>
+      JSON.stringify({
+        id: r.id,
+        at: r.at,
+        model: r.model,
+        image: `${r.id}.${r.ext || "jpg"}`,
+        modelPunches: r.punches,
+        verdict: r.label.verdict,
+        truthPunches: r.label.punches,
+        reportedPunches: r.report ? r.report.punches : null,
+      })
+    );
+  res.writeHead(200, {
+    "Content-Type": "application/x-ndjson; charset=utf-8",
+    "Content-Disposition": 'attachment; filename="punchcard-labeled.ndjson"',
+  });
+  res.end(lines.join("\n") + (lines.length ? "\n" : ""));
+}
+
+function handleContribPage(req, res) {
+  if (!contribAuthed(req)) return contribDeny(res);
+  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+  res.end(contribHtml());
+}
+
+function contribHtml() {
+  return `<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>punchcard / contrib</title><style>
+:root{--ink:#201e1d;--red:#ec3013;--bg:#f3f2f2}
+*{box-sizing:border-box}
+body{margin:0;padding:20px;font:13px/1.5 ui-monospace,Menlo,Consolas,monospace;color:var(--ink);background:#fff}
+h1{font-size:15px;letter-spacing:.06em;text-transform:uppercase;border-bottom:2px solid var(--ink);padding-bottom:8px}
+.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0}
+button,select{font:inherit;border:2px solid var(--ink);background:#fff;padding:5px 10px;cursor:pointer;text-transform:uppercase;letter-spacing:.04em}
+button.on{background:var(--ink);color:#fff}
+a{color:var(--red)}
+.card{border:2px solid var(--ink);margin:14px 0;display:grid;grid-template-columns:260px 1fr;gap:0}
+.card img{width:100%;display:block;border-right:2px solid var(--ink);background:var(--bg)}
+.meta{padding:12px;overflow:auto}
+.flags span{display:inline-block;border:1px solid var(--red);color:var(--red);padding:0 6px;margin:0 4px 4px 0;font-size:11px;text-transform:uppercase}
+.k{color:#605d5d}
+table{border-collapse:collapse;margin:8px 0}
+td{border:1px solid #ccc;padding:2px 7px}
+textarea{width:100%;min-height:120px;font:inherit;border:2px solid var(--ink);padding:8px}
+.act{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+.tag{font-size:11px;text-transform:uppercase;padding:2px 6px;border:1px solid var(--ink)}
+.tag.ok{background:#1a7f37;color:#fff;border-color:#1a7f37}
+.tag.bad{background:var(--red);color:#fff;border-color:var(--red)}
+@media(max-width:640px){.card{grid-template-columns:1fr}.card img{border-right:0;border-bottom:2px solid var(--ink)}}
+</style>
+<h1>punchcard / contrib review</h1>
+<div class="bar">
+  <button id="s-new" class="on">Newest</button>
+  <button id="s-sus">Most suspect</button>
+  <span class="k" id="count"></span>
+  <a id="export" href="#">Export labeled &darr;</a>
+  <button id="more">Load more</button>
+</div>
+<div id="list"></div>
+<script>
+const qs = new URLSearchParams(location.search);
+const tok = qs.get("token") || "";
+const withTok = (u) => u + (u.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(tok);
+document.getElementById("export").href = withTok("/contrib/export");
+let sort = "new", offset = 0;
+const listEl = document.getElementById("list");
+
+function punchTable(ps) {
+  if (!ps || !ps.length) return "<i>none</i>";
+  return "<table>" + ps.map(p =>
+    "<tr><td>"+p.type+"</td><td>"+p.date+"</td><td>"+p.time+"</td><td>"+(p.confidence!=null?p.confidence:"")+"</td></tr>").join("") + "</table>";
+}
+function card(r) {
+  const el = document.createElement("div");
+  el.className = "card";
+  const labelTag = r.label ? '<span class="tag '+r.label.verdict+'">labeled '+r.label.verdict+'</span>' : "";
+  const rep = r.report ? '<span class="tag">reported: '+r.report.editedRows+' edits</span>' : "";
+  el.innerHTML =
+    '<img loading="lazy" src="'+withTok("/contrib/asset/"+r.id)+'">' +
+    '<div class="meta">' +
+      '<div class="k">'+r.id+'</div>' +
+      '<div>'+ (r.model||"?") +' &middot; '+r.punchCount+' punches &middot; '+Math.round((r.bytes||0)/1024)+' kB &middot; score '+(r.suspectScore||0)+' '+labelTag+' '+rep+'</div>' +
+      '<div class="flags">'+(r.flags||[]).map(f=>"<span>"+f+"</span>").join("")+'</div>' +
+      '<div class="k">model output</div>'+ punchTable(r.punches) +
+      (r.report && r.report.punches && r.report.punches.length ? '<div class="k">user\\'s final</div>'+punchTable(r.report.punches) : "") +
+      '<div class="k">truth (editable JSON)</div>' +
+      '<textarea>'+ JSON.stringify((r.label&&r.label.punches)||(r.report&&r.report.punches)||r.punches, null, 1) +'</textarea>' +
+      '<div class="act">' +
+        '<button data-v="ok">Mark OK</button>' +
+        '<button data-v="bad">Mark WRONG + save truth</button>' +
+        '<span class="k save-note"></span>' +
+      '</div>' +
+    '</div>';
+  const ta = el.querySelector("textarea");
+  const note = el.querySelector(".save-note");
+  el.querySelectorAll("button[data-v]").forEach(b => b.onclick = async () => {
+    let punches;
+    try { punches = JSON.parse(ta.value); } catch { note.textContent = "bad JSON"; return; }
+    note.textContent = "saving…";
+    const res = await fetch(withTok("/contrib/label"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: r.id, verdict: b.dataset.v, punches }),
+    });
+    note.textContent = res.ok ? "saved" : "error";
+  });
+  return el;
+}
+
+async function load(reset) {
+  if (reset) { offset = 0; listEl.innerHTML = ""; }
+  const u = withTok("/contrib/list?limit=25&offset="+offset+"&sort="+(sort==="sus"?"suspect":"new"));
+  const data = await (await fetch(u)).json();
+  document.getElementById("count").textContent = data.total + " total";
+  data.items.forEach(r => listEl.appendChild(card(r)));
+  offset += data.items.length;
+}
+document.getElementById("s-new").onclick = (e) => { sort="new"; e.target.classList.add("on"); document.getElementById("s-sus").classList.remove("on"); load(true); };
+document.getElementById("s-sus").onclick = (e) => { sort="sus"; e.target.classList.add("on"); document.getElementById("s-new").classList.remove("on"); load(true); };
+document.getElementById("more").onclick = () => load(false);
+load(true);
+</script>`;
 }
 
 /* -------------------------------- /stats ------------------------------ */
@@ -945,7 +1357,22 @@ ${hourBars}
 <h2>Reads by weekday</h2>
 ${wdBars}
 <h2>Punches per card</h2>
-${pcBars || "<p>none yet</p>"}`;
+${pcBars || "<p>none yet</p>"}
+<h2>Read accuracy (from shared cards)</h2>
+${
+  s.accuracy.reportedReads
+    ? `<table>${row("clean rate (no rows edited)", pct(s.accuracy.cleanRate))}${row(
+        "reads reported / edited",
+        s.accuracy.reportedReads + " / " + s.accuracy.editedReads
+      )}${row("reviewer-labeled", s.accuracy.labeled)}</table>` +
+      (s.accuracy.topMisreads.length
+        ? "<h2>Top misreads (was &rarr; corrected)</h2>" +
+          s.accuracy.topMisreads
+            .map(([k, v]) => barRow(k, v, s.accuracy.topMisreads[0][1]))
+            .join("")
+        : "")
+    : "<p>no reads reported back yet</p>"
+}`;
 }
 
 function handleStats(req, res) {
@@ -999,6 +1426,14 @@ export const server = createServer((req, res) => {
     handleRead(req, res).catch((e) => sendJson(res, 500, { error: String(e) }));
     return;
   }
+  if (req.method === "POST" && path === "/api/correction") {
+    handleCorrection(req, res).catch((e) => sendJson(res, 500, { error: String(e) }));
+    return;
+  }
+  if (req.method === "POST" && path === "/contrib/label") {
+    handleContribLabel(req, res).catch((e) => sendJson(res, 500, { error: String(e) }));
+    return;
+  }
   if (req.method === "GET") {
     if (path === "/healthz") {
       res.writeHead(200, { "Content-Type": "text/plain", "Cache-Control": "no-store" }).end("ok");
@@ -1008,6 +1443,10 @@ export const server = createServer((req, res) => {
       handleStats(req, res);
       return;
     }
+    if (path === "/contrib") return handleContribPage(req, res);
+    if (path === "/contrib/list") return handleContribList(req, res);
+    if (path === "/contrib/export") return handleContribExport(req, res);
+    if (path.startsWith("/contrib/asset/")) return handleContribAsset(req, res);
   }
   if (req.method === "GET" || req.method === "HEAD") {
     serveStatic(req, res).catch(() => res.writeHead(500).end("error"));

@@ -10,6 +10,9 @@ import {
   percentile,
   minToHHMM,
   snapshot,
+  safeId,
+  suspectFlags,
+  misreadKey,
 } from "../server.mjs";
 
 /* -------------------------------- metrics ------------------------------ */
@@ -66,6 +69,67 @@ test("snapshot returns the expected shape on a fresh server", () => {
     "last20",
     "window",
   ]);
+  assert.deepEqual(Object.keys(s.accuracy).sort(), [
+    "cleanRate",
+    "editedReads",
+    "labeled",
+    "reportedReads",
+    "topMisreads",
+  ]);
+});
+
+/* --------------------------- contrib helpers --------------------------- */
+
+test("safeId only accepts the id shape storeContribution produces", () => {
+  assert.equal(safeId("2026-09-02T15-56-37-629Z_qz7vfe"), "2026-09-02T15-56-37-629Z_qz7vfe");
+  assert.equal(safeId("../../etc/passwd"), null);
+  assert.equal(safeId("2026-09-02T15-56-37-629Z_qz7vfe/../x"), null);
+  assert.equal(safeId(""), null);
+  assert.equal(safeId(42), null);
+});
+
+test("suspectFlags scores an empty read highest and a clean read at zero", () => {
+  const empty = suspectFlags([], "STOP");
+  assert.ok(empty.flags.includes("zero-punch"));
+  assert.ok(empty.score >= 5);
+
+  const clean = suspectFlags(
+    [
+      { type: "IN", date: "2026-09-01", time: "08:00", confidence: 0.98 },
+      { type: "OUT", date: "2026-09-01", time: "16:00", confidence: 0.98 },
+    ],
+    "STOP"
+  );
+  assert.deepEqual(clean.flags, []);
+  assert.equal(clean.score, 0);
+});
+
+test("suspectFlags catches low confidence and a truncated finish", () => {
+  const { flags } = suspectFlags(
+    [
+      { type: "IN", date: "2026-09-01", time: "08:00", confidence: 0.4 },
+      { type: "OUT", date: "2026-09-01", time: "16:00", confidence: 0.9 },
+    ],
+    "MAX_TOKENS"
+  );
+  assert.ok(flags.includes("low-conf"));
+  assert.ok(flags.includes("truncated"));
+});
+
+test("misreadKey summarises the one thing that changed", () => {
+  assert.equal(
+    misreadKey({ type: "IN", date: "2026-09-01", time: "03:05" }, { type: "IN", date: "2026-09-01", time: "08:05" }),
+    "03:05->08:05"
+  );
+  assert.equal(
+    misreadKey({ type: "IN", date: "2026-09-01", time: "08:00" }, { type: "OUT", date: "2026-09-01", time: "08:00" }),
+    "IN->OUT"
+  );
+  assert.equal(
+    misreadKey({ type: "IN", date: "2026-09-01", time: "08:00" }, { type: "IN", date: "2026-09-01", time: "08:00" }),
+    null
+  );
+  assert.equal(misreadKey(null, { type: "IN" }), null);
 });
 
 /* ------------------------------- staticTarget ---------------------------- */

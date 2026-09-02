@@ -521,7 +521,12 @@ body {
   cursor: pointer;
 }
 .chip.on { background: var(--color-accent); border-color: var(--color-accent); }
+.chip.attn { border-color: var(--color-accent); color: var(--color-accent); animation: chippulse 1s ease-in-out infinite; }
+@keyframes chippulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+@media (prefers-reduced-motion: reduce) { .chip.attn { animation: none; } }
 .chip-spacer { min-width: 58px; }
+.confirmbar { gap: 12px; }
+.confirmbar .usebtn { flex: 1; max-width: 260px; }
 .capnote {
   margin: 0;
   padding: 12px 18px calc(14px + env(safe-area-inset-bottom, 0px));
