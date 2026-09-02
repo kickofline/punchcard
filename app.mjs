@@ -26,6 +26,13 @@ const html = htmFactory.bind(h);
 
 const HOURS_URL = "https://info.obu.edu/info/p3/WS_STUHOURS.php?P3PROG=WS_STUHOURS";
 
+const IS_IOS =
+  typeof navigator !== "undefined" && /iphone|ipad|ipod/i.test(navigator.userAgent || "");
+const IS_STANDALONE =
+  typeof window !== "undefined" &&
+  ((window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) ||
+    window.navigator?.standalone === true);
+
 /* ------------------------------ local storage --------------------------------
    The component was written for a host that injected window.storage. On a plain
    static host that object does not exist, so this shim gives it the same shape
@@ -234,10 +241,33 @@ export function TimeCard() {
   const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState("");
   const [lowConfSeen, setLowConfSeen] = useState(true);
+  const [tutorial, setTutorial] = useState(false);
+  const [installEvt, setInstallEvt] = useState(null);
+  const [installHidden, setInstallHidden] = useState(true);
+  const [iosHelp, setIosHelp] = useState(false);
 
   function copyAndLog(text, key) {
     copy(text, key);
     window.open(HOURS_URL, "_blank", "noopener");
+  }
+
+  async function doInstall() {
+    if (installEvt) {
+      installEvt.prompt();
+      try { await installEvt.userChoice; } catch (e) { /* ignore */ }
+      setInstallEvt(null);
+      setInstallHidden(true);
+    } else {
+      setIosHelp(true);
+    }
+  }
+  function dismissInstall() {
+    setInstallHidden(true);
+    storage.set("punchcard:install-dismissed", "1");
+  }
+  function closeTutorial() {
+    setTutorial(false);
+    storage.set("punchcard:tutorial-seen", "1");
   }
   const [fresh, setFresh] = useState([]);
   const [copied, setCopied] = useState(null);
@@ -257,7 +287,30 @@ export function TimeCard() {
           setOther(v.other || "");
         }
       } catch (e) { /* nothing saved yet */ }
+      try {
+        const seenTut = await storage.get("punchcard:tutorial-seen");
+        if (!seenTut) setTutorial(true);
+        const dismissed = await storage.get("punchcard:install-dismissed");
+        if (!dismissed && !IS_STANDALONE) setInstallHidden(false);
+      } catch (e) { /* first run */ }
     })();
+  }, []);
+
+  useEffect(() => {
+    const onPrompt = (e) => {
+      e.preventDefault();
+      setInstallEvt(e);
+    };
+    const onInstalled = () => {
+      setInstallHidden(true);
+      storage.set("punchcard:install-dismissed", "1");
+    };
+    window.addEventListener("beforeinstallprompt", onPrompt);
+    window.addEventListener("appinstalled", onInstalled);
+    return () => {
+      window.removeEventListener("beforeinstallprompt", onPrompt);
+      window.removeEventListener("appinstalled", onInstalled);
+    };
   }, []);
 
   useEffect(() => {
@@ -486,8 +539,18 @@ export function TimeCard() {
 
       <header class="appbar">
         <span class="brand">Time Card</span>
-        <span class="date">${dateStamp}</span>
+        <span class="bar-right">
+          <button class="help" onClick=${() => setTutorial(true)} aria-label="How it works">?</button>
+          <span class="date">${dateStamp}</span>
+        </span>
       </header>
+
+      ${!installHidden && (installEvt || IS_IOS) && html`
+        <div class="installbar">
+          <button class="installbtn" onClick=${doInstall}>Add to Home Screen</button>
+          <button class="installx" onClick=${dismissInstall} aria-label="Dismiss">✕</button>
+        </div>
+      `}
 
       <div class="wrap">
         <div class="stats">
@@ -666,6 +729,40 @@ export function TimeCard() {
               >
                 Review row
               </button>
+            </div>
+          </div>
+        </div>
+      `}
+
+      ${tutorial && html`
+        <div class="stage">
+          <div class="stagebar">
+            <span>How it works</span>
+            <button class="x" onClick=${closeTutorial}>Close</button>
+          </div>
+          <div class="tutbody">
+            <ol class="tut">
+              <li>Photograph the punch card, or add rows by hand.</li>
+              <li>The reader fills in each IN and OUT time. Tap any row to fix one.</li>
+              <li>Rows marked [?] were read with low confidence — check those against the card.</li>
+              <li>Hours is your running total. Tap a stat card to copy it and open the OBU hours page.</li>
+            </ol>
+          </div>
+          <div class="tutfoot">
+            <button class="btn btn-primary" onClick=${closeTutorial}>Got it</button>
+          </div>
+        </div>
+      `}
+
+      ${iosHelp && html`
+        <div class="dialog-backdrop">
+          <div class="dialog" role="dialog" aria-modal="true">
+            <div class="dialog-title">Add to Home Screen</div>
+            <div class="dialog-body">
+              In Safari, tap the Share button, then choose "Add to Home Screen".
+            </div>
+            <div class="dialog-actions">
+              <button class="btn btn-primary" onClick=${() => setIosHelp(false)}>Got it</button>
             </div>
           </div>
         </div>

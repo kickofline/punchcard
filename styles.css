@@ -104,7 +104,52 @@ body {
   padding-top: max(16px, env(safe-area-inset-top, 0px));
 }
 .appbar .brand { font-weight: 800; font-size: 19px; letter-spacing: 0.02em; text-transform: uppercase; }
+.appbar .bar-right { display: flex; align-items: center; gap: 12px; }
 .appbar .date { font-size: 11px; letter-spacing: 0.06em; color: var(--color-neutral-300); font-variant-numeric: tabular-nums; }
+.appbar .help {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1.5px solid rgba(255, 255, 255, 0.6);
+  background: none;
+  color: #fff;
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.appbar .help:hover { border-color: var(--color-accent); color: var(--color-accent); }
+
+.installbar { display: flex; align-items: stretch; border-bottom: var(--ink); }
+.installbtn {
+  flex: 1;
+  background: var(--color-accent);
+  color: #fff;
+  border: 0;
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 13px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  text-align: left;
+  padding: 12px 16px;
+  min-height: 46px;
+  cursor: pointer;
+}
+.installbtn:hover { background: var(--color-accent-600); }
+.installx {
+  width: 46px;
+  flex: none;
+  background: #fff;
+  border: 0;
+  border-left: var(--ink);
+  color: var(--color-text);
+  font-size: 14px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.installx:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
 
 .wrap { max-width: 430px; margin: 0 auto; padding: 16px; }
 
@@ -399,6 +444,43 @@ body {
 
 .readpanel { padding: 20px 24px calc(28px + env(safe-area-inset-bottom, 0px)); text-align: center; background: #111; }
 .readnote { color: #fff; font-size: 15px; font-weight: 700; text-transform: uppercase; margin: 0; line-height: 1.4; }
+
+/* -------------------------------- tutorial ----------------------------- */
+
+.tutbody { flex: 1; overflow-y: auto; background: #fff; padding: 20px 16px; }
+.tut { margin: 0; padding: 0; list-style: none; counter-reset: step; }
+.tut li {
+  counter-increment: step;
+  position: relative;
+  padding: 16px 0 16px 46px;
+  border-bottom: var(--ink);
+  font-size: 14px;
+  line-height: 1.5;
+  text-transform: uppercase;
+}
+.tut li:first-child { border-top: var(--ink); }
+.tut li::before {
+  content: counter(step);
+  position: absolute;
+  left: 0;
+  top: 14px;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-accent);
+  color: #fff;
+  font-weight: 800;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+.tutfoot {
+  background: #111;
+  padding: 16px;
+  padding-bottom: max(16px, env(safe-area-inset-bottom, 0px));
+}
+.tutfoot .btn { width: 100%; }
 
 
 /* -------------------------------- dialog ------------------------------ */
