@@ -185,15 +185,15 @@ body {
 .actions .btn { flex: 1; border: 0; }
 .actions .btn:first-child { border-right: var(--ink); }
 
-.punchnow { width: 100%; margin-bottom: 14px; }
+.punchnow { width: 100%; margin-bottom: 18px; }
 
 .contrib {
   display: flex;
   gap: 9px;
   align-items: flex-start;
-  margin: 0 0 16px;
+  margin: 12px 0 0;
   font-size: 11px;
-  line-height: 1.5;
+  line-height: 1.6;
   letter-spacing: 0.02em;
   text-transform: uppercase;
   color: var(--color-neutral-500);

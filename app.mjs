@@ -893,13 +893,6 @@ export function TimeCard() {
           ${open ? "Punch out now" : "Punch in now"}
         </button>
         <input ref=${library} type="file" accept="image/*" onChange=${onFile} hidden />
-        <label class="contrib">
-          <input type="checkbox" checked=${contribute} onChange=${toggleContribute} />
-          <span>
-            Share my card photos to improve the reader.
-            <button type="button" class="linklike" onClick=${() => setPrivacy(true)}>What's kept</button>
-          </span>
-        </label>
         ${error && html`<div class="err">${error}</div>`}
 
         <div class="sheet">
@@ -1026,6 +1019,13 @@ export function TimeCard() {
           The times here are read from your photo by an AI, and it can misread a faint or
           crooked stamp. Look over every row against the card before you turn in your hours.
         </p>
+        <label class="contrib">
+          <input type="checkbox" checked=${contribute} onChange=${toggleContribute} />
+          <span>
+            Share my card photos to improve the reader.
+            <button type="button" class="linklike" onClick=${() => setPrivacy(true)}>What's kept</button>
+          </span>
+        </label>
         <p class="footlink">
           <a href="/stats">Usage stats</a>
           <span aria-hidden="true"> · </span>
