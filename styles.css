@@ -108,19 +108,6 @@ body {
 
 .wrap { max-width: 430px; margin: 0 auto; padding: 16px; }
 
-/* --------------------------------- intro -------------------------------- */
-
-.intro { margin: 0 0 6px; font-size: 14px; font-weight: 700; text-transform: uppercase; }
-.ainote {
-  margin: 0 0 16px;
-  font-size: 12px;
-  line-height: 1.5;
-  text-transform: uppercase;
-  color: var(--color-neutral-800);
-  border-left: 2px solid var(--color-accent);
-  padding-left: 10px;
-}
-
 /* --------------------------------- stats -------------------------------- */
 
 .stats {

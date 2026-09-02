@@ -490,9 +490,6 @@ export function TimeCard() {
       </header>
 
       <div class="wrap">
-        <p class="intro">Photograph the card. Get your hours.</p>
-        <p class="ainote">AI reads the stamps. It misreads faint ones. Check every row before you submit.</p>
-
         <div class="stats">
           <button
             class="stat"
