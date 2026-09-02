@@ -539,6 +539,8 @@ body {
   padding: 0;
   font: inherit;
   color: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit; /* buttons don't inherit this on their own */
   text-decoration: underline;
   cursor: pointer;
 }
