@@ -359,10 +359,19 @@ body {
   cursor: pointer;
 }
 
-.stagebody { flex: 1; display: flex; align-items: center; justify-content: center; position: relative; overflow: hidden; }
-.stagebody video, .stagebody img { display: block; max-width: 100%; max-height: calc(100svh - 190px); }
+.stagebody { flex: 1; display: flex; align-items: center; justify-content: center; position: relative; overflow: hidden; padding: 16px; }
 
-.guide { position: relative; width: 62%; height: 70%; pointer-events: none; }
+.viewport {
+  position: relative;
+  width: min(100%, 420px);
+  aspect-ratio: 3 / 4;
+  max-height: calc(100svh - 200px);
+  background: #000;
+  overflow: hidden;
+}
+.viewport video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+
+.guide { position: absolute; inset: 7%; pointer-events: none; }
 .guide span {
   position: absolute;
   width: 26px;
@@ -377,8 +386,16 @@ body {
 .shutter { width: 64px; height: 64px; background: var(--color-accent); border: 3px solid #fff; border-radius: 0; cursor: pointer; }
 .shutter:focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
 
-.frame { width: 78%; height: 56%; background: #2a2a2a; border: 2px solid #444; position: relative; overflow: hidden; }
-.frame img { width: 100%; height: 100%; object-fit: cover; }
+.frame {
+  position: relative;
+  width: min(100%, 420px);
+  aspect-ratio: 3 / 4;
+  max-height: calc(100svh - 200px);
+  background: #2a2a2a;
+  border: 2px solid #444;
+  overflow: hidden;
+}
+.frame img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .bar { position: absolute; left: 0; right: 0; top: 0; height: 4px; background: rgba(255, 255, 255, 0.15); overflow: hidden; }
 .bar::after { content: ""; position: absolute; left: -40%; width: 40%; height: 100%; background: var(--color-accent); animation: slide 1.1s ease-in-out infinite; }
 @keyframes slide { 0% { left: -40%; } 100% { left: 100%; } }

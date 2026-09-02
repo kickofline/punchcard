@@ -446,9 +446,11 @@ export function TimeCard() {
             <button class="x" onClick=${() => { stopCamera(); setStatus("idle"); }}>Cancel</button>
           </div>
           <div class="stagebody">
-            <video ref=${video} playsinline muted></video>
-            <div class="guide">
-              <span class="tl"></span><span class="tr"></span><span class="bl"></span><span class="br"></span>
+            <div class="viewport">
+              <video ref=${video} playsinline muted></video>
+              <div class="guide">
+                <span class="tl"></span><span class="tr"></span><span class="bl"></span><span class="br"></span>
+              </div>
             </div>
           </div>
           <div class="shutterbar">
