@@ -185,7 +185,28 @@ body {
 .actions .btn { flex: 1; border: 0; }
 .actions .btn:first-child { border-right: var(--ink); }
 
-.punchnow { width: 100%; margin-bottom: 18px; }
+.punchnow { width: 100%; margin-bottom: 14px; }
+
+.contrib {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  margin: 0 0 16px;
+  font-size: 11px;
+  line-height: 1.5;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--color-neutral-500);
+  cursor: pointer;
+}
+.contrib input {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  accent-color: var(--color-accent);
+}
+.contrib .linklike { color: var(--color-accent-700); white-space: nowrap; }
 
 .err {
   border: 2px solid var(--color-accent);

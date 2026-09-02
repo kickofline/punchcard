@@ -48,6 +48,8 @@ node --test
 | `GEMINI_MODEL` | `gemini-flash-latest,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-flash-lite-latest` | comma list, newest first; the next model is tried when the one before is out of quota, overloaded, missing, or slow |
 | `GEMINI_TIMEOUT_MS` | `9000` | per-model deadline; a model that hasn't answered by then is abandoned for the next one |
 | `STATS_FILE` | `./.stats.json` | where `/stats` metrics persist; point at a mounted volume to survive redeploys |
+| `CONTRIB_DIR` | `contrib` next to `STATS_FILE` | where opted-in card photos + reader output are kept for quality review; set empty to disable |
+| `CONTRIB_MAX` | `3000` | cap on stored samples; oldest deleted first |
 | `PORT` | `3000` | Coolify sets this automatically |
 | `HOST` | `0.0.0.0` | binds all interfaces (reachable from other devices on the LAN); set `127.0.0.1` for local-only |
 
@@ -76,3 +78,9 @@ Deploy as a **Nixpacks** app (not a static site):
   ignored.
 - Saved state (current card + "other cards" minutes) lives in `localStorage`
   under `timecard:v1`, per browser.
+- **Photo sharing**: a checkbox on the main screen ("Share my card photos to
+  improve the reader") is on by default. While it's on, each submitted photo
+  and the reader's output are written to `CONTRIB_DIR` for accuracy review —
+  these can contain names / IDs printed on the card. Unticking it stops all
+  storage for that browser (`punchcard:contribute=0`). The sample card is
+  never stored. `/stats` shows `contributedSamples`.

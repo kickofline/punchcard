@@ -8,14 +8,27 @@
                         cascade of flash models.
      GEMINI_TIMEOUT_MS  per-model deadline before giving up on it (default 9000)
      STATS_FILE         where usage metrics persist (default ./.stats.json)
+     CONTRIB_DIR        where opted-in card photos + reader output are kept for
+                        quality review (default: a "contrib" dir next to
+                        STATS_FILE). Set CONTRIB_DIR= (empty) to disable.
+     CONTRIB_MAX        keep at most this many samples, oldest deleted first
+                        (default 3000)
      PORT               default 3000
      HOST               default 0.0.0.0 (all interfaces); 127.0.0.1 for local only
 */
 
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { extname, join, normalize } from "node:path";
+import {
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  readdirSync,
+  statSync,
+  rmSync,
+} from "node:fs";
+import { dirname, extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { argv } from "node:process";
 import { layout, readCard } from "./lib.mjs";
@@ -25,6 +38,9 @@ const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || "0.0.0.0"; // all interfaces; set HOST=127.0.0.1 to keep it local
 const CALL_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS || 9000);
 const STATS_FILE = process.env.STATS_FILE || join(ROOT, ".stats.json");
+const CONTRIB_DIR =
+  process.env.CONTRIB_DIR ?? join(dirname(STATS_FILE), "contrib");
+const CONTRIB_MAX = Number(process.env.CONTRIB_MAX || 3000);
 const API_KEY = process.env.GEMINI_API_KEY || "";
 const MODELS = (
   process.env.GEMINI_MODEL ||
@@ -77,7 +93,10 @@ export function validateReadBody(body) {
   const clientId =
     typeof cidRaw === "string" && cidRaw.length > 0 && cidRaw.length <= 64 ? cidRaw : null;
   const sample = !!(body && body.sample);
-  return { image, mimeType, clientId, sample };
+  // the client opts in (its checkbox defaults on) to keeping the photo +
+  // reader output to improve accuracy; never for the built-in sample card
+  const contribute = !sample && !!(body && body.contribute === true);
+  return { image, mimeType, clientId, sample, contribute };
 }
 
 export function isQuotaError(status, body) {
@@ -296,6 +315,7 @@ const metrics = {
   confN: 0,
   bytesProcessed: 0, // base64 chars processed
   fallthroughs: 0, // reads that needed > 1 model
+  contributed: 0, // reads whose photo + output the user let us keep
   geminiCalls: 0,
   latency: [],
   recent: [], // last N read outcomes, 1 = non-200, for a rolling error rate
@@ -486,6 +506,7 @@ export function snapshot(now = Date.now()) {
       window: recent.length,
     },
     modelWins,
+    contributedSamples: metrics.contributed,
     dataProcessedMB: Number(((metrics.bytesProcessed * 0.75) / 1e6).toFixed(2)),
 
     latencyMs: {
@@ -519,6 +540,7 @@ function serializeStats() {
     confN: metrics.confN,
     bytesProcessed: metrics.bytesProcessed,
     fallthroughs: metrics.fallthroughs,
+    contributed: metrics.contributed,
     geminiCalls: metrics.geminiCalls,
     latency: metrics.latency,
     recent: metrics.recent,
@@ -551,6 +573,7 @@ function loadStats() {
     metrics.confN = d.confN || 0;
     metrics.bytesProcessed = d.bytesProcessed || 0;
     metrics.fallthroughs = d.fallthroughs || 0;
+    metrics.contributed = d.contributed || 0;
     metrics.geminiCalls = d.geminiCalls || 0;
     metrics.latency = Array.isArray(d.latency) ? d.latency.slice(-RING) : [];
     metrics.recent = Array.isArray(d.recent) ? d.recent.slice(-RECENT) : [];
@@ -597,6 +620,83 @@ function flushStats() {
 }
 
 loadStats();
+
+/* --------------------- opt-in training contributions ------------------- */
+
+const EXT_FOR = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/heic": "heic", "image/heif": "heif" };
+let contribReady = false;
+
+function ensureContribDir() {
+  if (!CONTRIB_DIR) return false;
+  if (!contribReady) {
+    try {
+      mkdirSync(CONTRIB_DIR, { recursive: true });
+      contribReady = true;
+    } catch (e) {
+      console.log("contrib: cannot use", CONTRIB_DIR, "-", e.message);
+      return false;
+    }
+  }
+  return true;
+}
+
+/* Trim the store to CONTRIB_MAX samples, oldest first (a sample is a .json +
+   its sibling image, so the cap counts json files). */
+function trimContrib() {
+  try {
+    const metas = readdirSync(CONTRIB_DIR)
+      .filter((f) => f.endsWith(".json"))
+      .map((f) => ({ f, t: statSync(join(CONTRIB_DIR, f)).mtimeMs }))
+      .sort((a, b) => a.t - b.t);
+    for (let i = 0; i < metas.length - CONTRIB_MAX; i++) {
+      const base = metas[i].f.replace(/\.json$/, "");
+      for (const g of readdirSync(CONTRIB_DIR).filter((x) => x.startsWith(base + ".")))
+        rmSync(join(CONTRIB_DIR, g), { force: true });
+    }
+  } catch (e) {
+    /* best effort */
+  }
+}
+
+/* Persist one opted-in read: the raw photo plus what the model returned.
+   Fire-and-forget; a failure here must never affect the response. */
+function storeContribution({ image, mimeType, clientId, model, attempts, ms, punches, raw, finish }) {
+  if (!ensureContribDir()) return;
+  try {
+    const id =
+      new Date().toISOString().replace(/[:.]/g, "-") +
+      "_" +
+      Math.random().toString(36).slice(2, 8);
+    const ext = EXT_FOR[mimeType] || "bin";
+    writeFileSync(join(CONTRIB_DIR, `${id}.${ext}`), Buffer.from(image, "base64"));
+    writeFileSync(
+      join(CONTRIB_DIR, `${id}.json`),
+      JSON.stringify(
+        {
+          id,
+          at: new Date().toISOString(),
+          clientId: clientId || null,
+          model: model || null,
+          attempts: attempts || 1,
+          ms: ms || null,
+          mimeType,
+          bytes: Buffer.byteLength(image, "base64"),
+          punchCount: punches.length,
+          punches,
+          finish: finish || null,
+          rawText: typeof raw === "string" ? raw.slice(0, 4000) : null,
+        },
+        null,
+        2
+      )
+    );
+    metrics.contributed++;
+    scheduleSave();
+    if (metrics.contributed % 25 === 0) trimContrib();
+  } catch (e) {
+    console.log("contrib: write failed -", e.message);
+  }
+}
 
 /* ------------------------------- http layer ----------------------------- */
 
@@ -700,8 +800,23 @@ async function handleRead(req, res) {
       readOpts
     );
     const ms = Date.now() - t0;
-    console.log(`/api/read done${clean.sample ? " [sample]" : ""}  ${model}  ${punches.length} punches  ${ms}ms`);
+    console.log(
+      `/api/read done${clean.sample ? " [sample]" : ""}${clean.contribute ? " [shared]" : ""}  ${model}  ${punches.length} punches  ${ms}ms`
+    );
     if (!clean.sample) recordRead(200, ms, punches, { bytes, attempts, clientId: clean.clientId });
+    if (clean.contribute) {
+      storeContribution({
+        image: clean.image,
+        mimeType: clean.mimeType,
+        clientId: clean.clientId,
+        model,
+        attempts,
+        ms,
+        punches,
+        raw,
+        finish,
+      });
+    }
     const done = { punches, model };
     if (!punches.length) {
       done.finish = finish || null;
@@ -812,6 +927,7 @@ ${row("low-confidence rate", s.lowConfidenceRate)}
 ${row("gemini calls", s.geminiCalls)}
 ${row("model fallthrough rate", s.modelFallthroughRate)}
 ${row("error rate  last20 / last100 / all", [pct(s.errorRate.last20), pct(s.errorRate.last100), pct(s.errorRate.allTime)].join(" / ") + "  (n=" + s.errorRate.window + ")")}
+${row("shared samples kept", s.contributedSamples)}
 ${row("data processed (MB)", s.dataProcessedMB)}
 ${row("latency p50 / p95 / max ms", s.latencyMs.p50 + " / " + s.latencyMs.p95 + " / " + s.latencyMs.max)}
 </table>

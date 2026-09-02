@@ -54,6 +54,7 @@ test("snapshot returns the expected shape on a fresh server", () => {
     "punchesPerCard",
     "errorRate",
     "modelWins",
+    "contributedSamples",
   ]) {
     assert.ok(k in s, `snapshot has ${k}`);
   }
@@ -182,6 +183,7 @@ test("validateReadBody accepts image + mimeType", () => {
     mimeType: "image/png",
     clientId: null,
     sample: false,
+    contribute: false,
   });
 });
 
@@ -191,13 +193,24 @@ test("validateReadBody defaults the mimeType to image/jpeg", () => {
     mimeType: "image/jpeg",
     clientId: null,
     sample: false,
+    contribute: false,
   });
 });
 
 test("validateReadBody unwraps a data: URL and keeps clientId + sample", () => {
   assert.deepEqual(
     validateReadBody({ image: "data:image/webp;base64,QUJD", clientId: "abc", sample: true }),
-    { image: "QUJD", mimeType: "image/webp", clientId: "abc", sample: true }
+    { image: "QUJD", mimeType: "image/webp", clientId: "abc", sample: true, contribute: false }
+  );
+});
+
+test("validateReadBody honours contribute:true, but never for the sample card", () => {
+  assert.equal(validateReadBody({ image: "QUJD", contribute: true }).contribute, true);
+  assert.equal(validateReadBody({ image: "QUJD", contribute: false }).contribute, false);
+  assert.equal(validateReadBody({ image: "QUJD" }).contribute, false);
+  assert.equal(
+    validateReadBody({ image: "QUJD", contribute: true, sample: true }).contribute,
+    false
   );
 });
 

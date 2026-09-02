@@ -245,7 +245,12 @@ async function readCardImage(dataURL, onStep = () => {}, opts = {}) {
     res = await fetch("/api/read", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image: dataURL, clientId: clientId(), sample: !!opts.sample }),
+      body: JSON.stringify({
+        image: dataURL,
+        clientId: clientId(),
+        sample: !!opts.sample,
+        contribute: !opts.sample && !!opts.contribute,
+      }),
       signal: AbortSignal.timeout(55000),
     });
   } catch (e) {
@@ -332,6 +337,7 @@ export function TimeCard() {
   const [hint, setHint] = useState("");
   const [torchState, setTorchState] = useState({ supported: false, on: false });
   const [privacy, setPrivacy] = useState(false);
+  const [contribute, setContribute] = useState(true);
 
   function copyAndLog(text, key) {
     copy(text, key);
@@ -354,6 +360,13 @@ export function TimeCard() {
   }
   function closeTutorial() {
     setTutorial(false);
+  }
+  function toggleContribute() {
+    setContribute((v) => {
+      const n = !v;
+      storage.set("punchcard:contribute", n ? "1" : "0");
+      return n;
+    });
   }
   const [fresh, setFresh] = useState([]);
   const [copied, setCopied] = useState(null);
@@ -381,6 +394,10 @@ export function TimeCard() {
         const dismissed = await storage.get("punchcard:install-dismissed");
         if (!dismissed && !IS_STANDALONE) setInstallHidden(false);
       } catch (e) { /* first run */ }
+      try {
+        const c = await storage.get("punchcard:contribute");
+        if (c && c.value === "0") setContribute(false);
+      } catch (e) { /* default on */ }
     })();
   }, []);
 
@@ -683,7 +700,10 @@ export function TimeCard() {
     setReadMsg("Sending the photo…");
     setError("");
     try {
-      const found = await readCardImage(s.src, setReadMsg, opts);
+      const found = await readCardImage(s.src, setReadMsg, {
+        contribute: !opts.sample && contribute,
+        ...opts,
+      });
       const merged = layout([...punches, ...found]);
       const keys = new Set(found.map((p) => `${p.type}|${p.date}|${p.time}`));
       setFresh(merged.map((p, i) => (p && keys.has(`${p.type}|${p.date}|${p.time}`) ? i : -1)).filter((i) => i >= 0));
@@ -780,8 +800,8 @@ export function TimeCard() {
               : html`<span class="chip-spacer"></span>`}
           </div>
           <p class="capnote">
-            Your photo goes to Google's vision service to read the times, then it's dropped —
-            nothing is saved on our server.
+            Your photo is sent to Google's vision service to read the times. With sharing
+            on (the default), a copy and the result are also kept to improve accuracy.
             <button class="linklike" onClick=${() => setPrivacy(true)}>Details</button>
           </p>
           <canvas ref=${sampler} class="probe" aria-hidden="true"></canvas>
@@ -873,6 +893,13 @@ export function TimeCard() {
           ${open ? "Punch out now" : "Punch in now"}
         </button>
         <input ref=${library} type="file" accept="image/*" onChange=${onFile} hidden />
+        <label class="contrib">
+          <input type="checkbox" checked=${contribute} onChange=${toggleContribute} />
+          <span>
+            Share my card photos to improve the reader.
+            <button type="button" class="linklike" onClick=${() => setPrivacy(true)}>What's kept</button>
+          </span>
+        </label>
         ${error && html`<div class="err">${error}</div>`}
 
         <div class="sheet">
@@ -1002,7 +1029,7 @@ export function TimeCard() {
         <p class="footlink">
           <a href="/stats">Usage stats</a>
           <span aria-hidden="true"> · </span>
-          <button class="linklike" onClick=${() => setPrivacy(true)}>Your photo &amp; privacy</button>
+          <button class="linklike" onClick=${() => setPrivacy(true)}>Your photo and privacy</button>
         </p>
       </div>
 
@@ -1049,17 +1076,22 @@ export function TimeCard() {
       ${privacy && html`
         <div class="dialog-backdrop">
           <div class="dialog" role="dialog" aria-modal="true">
-            <div class="dialog-title">Your photo &amp; privacy</div>
+            <div class="dialog-title">Your photo and privacy</div>
             <div class="dialog-body">
               <p>
                 When you read a card, the photo is sent over HTTPS to Google's Gemini
                 vision service, which returns the times it can make out. Our server
-                only relays it — the image isn't written to disk or kept in any log.
+                relays it and records the read in anonymous usage counts.
               </p>
               <p>
-                Your card data (the punch rows and totals) stays in this browser and
-                is never uploaded. Trying the sample card uses a smaller model and
-                isn't counted anywhere.
+                <b>"Share my card photos"</b> is on by default. While it's on, the photo
+                you submit and the times the reader returned are saved so misreads can
+                be found and fixed. It can include your name and ID if they're on the
+                card. Untick the box and nothing from your reads is kept.
+              </p>
+              <p>
+                Either way, your punch rows and totals stay in this browser and are
+                never uploaded. The sample card uses a smaller model and is never saved.
               </p>
             </div>
             <div class="dialog-actions">
