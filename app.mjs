@@ -329,7 +329,6 @@ export function TimeCard() {
   const [installEvt, setInstallEvt] = useState(null);
   const [installHidden, setInstallHidden] = useState(true);
   const [iosHelp, setIosHelp] = useState(false);
-  const [autoCap, setAutoCap] = useState(true);
   const [hint, setHint] = useState("");
   const [torchState, setTorchState] = useState({ supported: false, on: false });
   const [privacy, setPrivacy] = useState(false);
@@ -382,10 +381,6 @@ export function TimeCard() {
         const dismissed = await storage.get("punchcard:install-dismissed");
         if (!dismissed && !IS_STANDALONE) setInstallHidden(false);
       } catch (e) { /* first run */ }
-      try {
-        const a = await storage.get("punchcard:autocap");
-        if (a && a.value === "0") setAutoCap(false);
-      } catch (e) { /* default on */ }
     })();
   }, []);
 
@@ -535,14 +530,6 @@ export function TimeCard() {
     } catch (e) { /* device refused the constraint */ }
   }
 
-  function toggleAuto() {
-    setAutoCap((v) => {
-      const n = !v;
-      storage.set("punchcard:autocap", n ? "1" : "0");
-      return n;
-    });
-  }
-
   /* Take the shot. If the live scanner has a lock on the card, straighten it
      out of the frame; otherwise fall back to the whole frame. */
   async function capture(quad, cover) {
@@ -645,14 +632,7 @@ export function TimeCard() {
         st.wait++;
         return setHint("Focusing…");
       }
-      if (autoCap && st.stable >= SCAN.STABLE_FRAMES) {
-        stopped = true;
-        cancelAnimationFrame(st.raf);
-        setHint("");
-        capture(quad, st.cover);
-        return;
-      }
-      setHint(autoCap ? "Hold still…" : "Card locked — tap to shoot");
+      setHint("Card in view — tap to shoot");
     };
 
     st.raf = requestAnimationFrame(tick);
@@ -664,7 +644,7 @@ export function TimeCard() {
       } catch (e) { /* canvas gone */ }
       setHint("");
     };
-  }, [status, autoCap]);
+  }, [status]);
 
   async function onFile(e) {
     const file = e.target.files?.[0];
@@ -785,11 +765,7 @@ export function TimeCard() {
             </div>
           </div>
           <div class="shutterbar">
-            <button
-              class=${`chip ${autoCap ? "on" : ""}`}
-              onClick=${toggleAuto}
-              aria-pressed=${autoCap}
-            >Auto</button>
+            <span class="chip-spacer"></span>
             <button
               class="shutter"
               onClick=${() => capture(scan.current?.quad || null, scan.current?.cover || null)}

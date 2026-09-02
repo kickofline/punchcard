@@ -3,15 +3,16 @@
    frame and draws whatever this returns. Kept dependency-free and unit
    tested (test/scan.test.mjs). */
 
-/* framing / stability thresholds, exported so they can be tuned in one place */
+/* framing / focus thresholds for the on-screen scan guide, exported so they
+   can be tuned in one place */
 export const SCAN = {
   MIN_FILL: 0.3, // card must cover at least this fraction of the frame
   MAX_FILL: 0.92, // ...and not completely fill it (need a margin to find edges)
-  STABLE_FRAMES: 8, // consecutive steady frames before auto-capture
+  STABLE_FRAMES: 8, // steady this many frames -> the outline turns green
   MOVE_TOL: 0.02, // max corner drift (fraction of frame diagonal) to count as steady
   SHARP_MIN: 6, // absolute floor on Laplacian variance
   SHARP_REL: 0.55, // ...or this fraction of the sharpest frame seen so far
-  MAX_WAIT_FRAMES: 22, // fire once steady this long even if a touch soft
+  MAX_WAIT_FRAMES: 22, // stop nagging "Focusing" after this many steady frames
 };
 
 /* Otsu threshold from a 256-bin histogram. */
