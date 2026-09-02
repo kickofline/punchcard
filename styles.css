@@ -141,15 +141,15 @@ body {
 .installx {
   width: 46px;
   flex: none;
-  background: #fff;
+  background: var(--color-accent);
   border: 0;
-  border-left: var(--ink);
-  color: var(--color-text);
-  font-size: 14px;
+  border-left: 2px solid rgba(255, 255, 255, 0.45);
+  color: #fff;
+  font-size: 15px;
   font-weight: 800;
   cursor: pointer;
 }
-.installx:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
+.installx:hover { background: var(--color-accent-600); }
 
 .wrap { max-width: 430px; margin: 0 auto; padding: 16px; }
 

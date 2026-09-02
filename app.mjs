@@ -545,7 +545,14 @@ export function TimeCard() {
         </span>
       </header>
 
-      ${!installHidden && (installEvt || IS_IOS) && html`
+      ${!installHidden &&
+      (installEvt || IS_IOS) &&
+      status === "idle" &&
+      !tutorial &&
+      !iosHelp &&
+      !error &&
+      lowConfSeen &&
+      html`
         <div class="installbar">
           <button class="installbtn" onClick=${doInstall}>Add to Home Screen</button>
           <button class="installx" onClick=${dismissInstall} aria-label="Dismiss">✕</button>
