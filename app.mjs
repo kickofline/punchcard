@@ -267,7 +267,6 @@ export function TimeCard() {
   }
   function closeTutorial() {
     setTutorial(false);
-    storage.set("punchcard:tutorial-seen", "1");
   }
   const [fresh, setFresh] = useState([]);
   const [copied, setCopied] = useState(null);
@@ -288,8 +287,6 @@ export function TimeCard() {
         }
       } catch (e) { /* nothing saved yet */ }
       try {
-        const seenTut = await storage.get("punchcard:tutorial-seen");
-        if (!seenTut) setTutorial(true);
         const dismissed = await storage.get("punchcard:install-dismissed");
         if (!dismissed && !IS_STANDALONE) setInstallHidden(false);
       } catch (e) { /* first run */ }
