@@ -12,6 +12,10 @@ a misread is a quick fix.
   totals, per-day breakdown, `localStorage` persistence.
 - **`lib.mjs`** — pure time-card logic (grid layout, shift pairing, formatting),
   unit-tested with `node --test`.
+- **`scan.mjs`** — dependency-free frame analysis for the live camera:
+  finds the card's four corners, scores framing / steadiness / focus, and
+  perspective-corrects the shot. Drives auto-capture and the on-screen
+  outline. Also unit-tested.
 - **`server.mjs`** — a zero-dependency Node server that serves the static app
   **and** exposes `POST /api/read`, which relays the photo to the Google Gemini
   vision API. The API key lives only on the server, never in the browser.

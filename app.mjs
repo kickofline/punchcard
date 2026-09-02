@@ -21,8 +21,19 @@ import {
   readCard,
   prettyModel,
 } from "./lib.mjs";
+import {
+  SCAN,
+  detectCard,
+  quadArea,
+  quadDrift,
+  sharpness,
+  affine3,
+  targetSize,
+} from "./scan.mjs";
 
 const html = htmFactory.bind(h);
+
+const SAMPLE_W = 192; // width of the frame we analyse for the live scanner
 
 const HOURS_URL = "https://info.obu.edu/info/p3/WS_STUHOURS.php?P3PROG=WS_STUHOURS";
 
@@ -116,6 +127,50 @@ function toCanvas(src, w, h, max) {
   c.width = Math.max(1, Math.round(w * scale));
   c.height = Math.max(1, Math.round(h * scale));
   c.getContext("2d").drawImage(src, 0, 0, c.width, c.height);
+  return c;
+}
+
+/* Draw `video` into a box with object-fit: cover semantics. Returns the
+   transform so a point in box space maps back to raw video pixels:
+   rawX = (x - dx) / scale,  rawY = (y - dy) / scale. */
+function coverDraw(ctx, video, bw, bh) {
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  const scale = Math.max(bw / vw, bh / vh);
+  const dw = vw * scale;
+  const dh = vh * scale;
+  const dx = (bw - dw) / 2;
+  const dy = (bh - dh) / 2;
+  ctx.drawImage(video, dx, dy, dw, dh);
+  return { scale, dx, dy };
+}
+
+/* Perspective-correct the card out of the raw video frame using its four
+   corners (raw-pixel coords, ordered tl,tr,br,bl). Two affine-mapped
+   triangles - no external lib. Returns a canvas, or null if degenerate. */
+function warpCard(video, quad) {
+  const { w, h } = targetSize(quad, 1600);
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext("2d");
+  const S = quad.map((p) => [p.x, p.y]);
+  const D = [[0, 0], [w, 0], [w, h], [0, h]];
+  for (const [a, b, d] of [[0, 1, 3], [1, 2, 3]]) {
+    const M = affine3([S[a], S[b], S[d]], [D[a], D[b], D[d]]);
+    if (!M) return null;
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(D[a][0], D[a][1]);
+    ctx.lineTo(D[b][0], D[b][1]);
+    ctx.lineTo(D[d][0], D[d][1]);
+    ctx.closePath();
+    ctx.clip();
+    ctx.setTransform(M[0][0], M[1][0], M[0][1], M[1][1], M[0][2], M[1][2]);
+    ctx.drawImage(video, 0, 0);
+    ctx.restore();
+  }
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
   return c;
 }
 
@@ -274,6 +329,10 @@ export function TimeCard() {
   const [installEvt, setInstallEvt] = useState(null);
   const [installHidden, setInstallHidden] = useState(true);
   const [iosHelp, setIosHelp] = useState(false);
+  const [autoCap, setAutoCap] = useState(true);
+  const [hint, setHint] = useState("");
+  const [torchState, setTorchState] = useState({ supported: false, on: false });
+  const [privacy, setPrivacy] = useState(false);
 
   function copyAndLog(text, key) {
     copy(text, key);
@@ -304,6 +363,10 @@ export function TimeCard() {
   const library = useRef(null);
   const video = useRef(null);
   const stream = useRef(null);
+  const sampler = useRef(null); // hidden canvas the scanner reads frames from
+  const overlay = useRef(null); // canvas that draws the detected card outline
+  const torchTrack = useRef(null);
+  const scan = useRef(null); // live-scan working state (see the camera effect)
 
   useEffect(() => {
     (async () => {
@@ -319,6 +382,10 @@ export function TimeCard() {
         const dismissed = await storage.get("punchcard:install-dismissed");
         if (!dismissed && !IS_STANDALONE) setInstallHidden(false);
       } catch (e) { /* first run */ }
+      try {
+        const a = await storage.get("punchcard:autocap");
+        if (a && a.value === "0") setAutoCap(false);
+      } catch (e) { /* default on */ }
     })();
   }, []);
 
@@ -431,6 +498,14 @@ export function TimeCard() {
         audio: false,
       });
       stream.current = s;
+      const track = s.getVideoTracks()[0] || null;
+      torchTrack.current = track;
+      let torchable = false;
+      try {
+        torchable = !!(track && track.getCapabilities && track.getCapabilities().torch);
+      } catch (e) { /* not supported */ }
+      setTorchState({ supported: torchable, on: false });
+      setHint("");
       setStatus("camera");
       setTimeout(() => {
         if (video.current) {
@@ -446,15 +521,150 @@ export function TimeCard() {
   function stopCamera() {
     stream.current?.getTracks().forEach((t) => t.stop());
     stream.current = null;
+    torchTrack.current = null;
+    setTorchState({ supported: false, on: false });
   }
 
-  async function grabFrame() {
+  async function toggleTorch() {
+    const t = torchTrack.current;
+    if (!t) return;
+    const next = !torchState.on;
+    try {
+      await t.applyConstraints({ advanced: [{ torch: next }] });
+      setTorchState((v) => ({ ...v, on: next }));
+    } catch (e) { /* device refused the constraint */ }
+  }
+
+  function toggleAuto() {
+    setAutoCap((v) => {
+      const n = !v;
+      storage.set("punchcard:autocap", n ? "1" : "0");
+      return n;
+    });
+  }
+
+  /* Take the shot. If the live scanner has a lock on the card, straighten it
+     out of the frame; otherwise fall back to the whole frame. */
+  async function capture(quad, cover) {
     const v = video.current;
     if (!v || !v.videoWidth) return;
-    const c = toCanvas(v, v.videoWidth, v.videoHeight, 1600);
+    let c = null;
+    if (quad && cover) {
+      const raw = quad.map((p) => ({
+        x: (p.x - cover.dx) / cover.scale,
+        y: (p.y - cover.dy) / cover.scale,
+      }));
+      try {
+        c = warpCard(v, raw);
+      } catch (e) { /* fall back below */ }
+    }
+    if (!c) c = toCanvas(v, v.videoWidth, v.videoHeight, 1600);
     stopCamera();
     await send({ src: shotURL(c) });
   }
+
+  /* Live scanner: while the camera is open, sample small frames, find the
+     card, draw its outline, and (when Auto is on) fire the shutter once the
+     card is framed, steady and in focus. */
+  useEffect(() => {
+    if (status !== "camera") return;
+    const bw = SAMPLE_W;
+    const bh = Math.round((SAMPLE_W * 4) / 3);
+    const sc = sampler.current;
+    const oc = overlay.current;
+    if (!sc || !oc) return;
+    sc.width = oc.width = bw;
+    sc.height = oc.height = bh;
+    const sctx = sc.getContext("2d", { willReadFrequently: true });
+    const octx = oc.getContext("2d");
+    const st = (scan.current = { raf: 0, prev: null, stable: 0, wait: 0, maxSharp: 0, quad: null, cover: null });
+    let stopped = false;
+
+    const tick = () => {
+      if (stopped) return;
+      st.raf = requestAnimationFrame(tick);
+      const v = video.current;
+      if (!v || !v.videoWidth) return;
+      st.cover = coverDraw(sctx, v, bw, bh);
+      let img;
+      try {
+        img = sctx.getImageData(0, 0, bw, bh);
+      } catch (e) {
+        return;
+      }
+      const d = img.data;
+      const gray = new Uint8ClampedArray(bw * bh);
+      for (let i = 0, j = 0; i < d.length; i += 4, j++) {
+        gray[j] = (d[i] * 77 + d[i + 1] * 150 + d[i + 2] * 29) >> 8;
+      }
+      const quad = detectCard(gray, bw, bh);
+      st.quad = quad;
+
+      octx.clearRect(0, 0, bw, bh);
+      if (quad) {
+        octx.lineWidth = 2;
+        octx.strokeStyle = st.stable >= SCAN.STABLE_FRAMES ? "#3ad07a" : "rgba(255,255,255,0.92)";
+        octx.beginPath();
+        quad.forEach((p, i) => (i ? octx.lineTo(p.x, p.y) : octx.moveTo(p.x, p.y)));
+        octx.closePath();
+        octx.stroke();
+      }
+
+      if (!quad) {
+        st.prev = null;
+        st.stable = 0;
+        st.wait = 0;
+        setHint("Point at the card");
+        return;
+      }
+      const fill = quadArea(quad) / (bw * bh);
+      const drift = quadDrift(st.prev, quad, bw, bh);
+      st.prev = quad;
+      const xs = quad.map((p) => p.x);
+      const ys = quad.map((p) => p.y);
+      const sharp = sharpness(gray, bw, bh, [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)]);
+      if (sharp > st.maxSharp) st.maxSharp = sharp;
+
+      if (fill < SCAN.MIN_FILL) {
+        st.stable = 0;
+        st.wait = 0;
+        return setHint("Move closer");
+      }
+      if (fill > SCAN.MAX_FILL) {
+        st.stable = 0;
+        st.wait = 0;
+        return setHint("Back up a little");
+      }
+      if (drift > SCAN.MOVE_TOL) {
+        st.stable = 0;
+        return setHint("Hold steady");
+      }
+      st.stable++;
+      const soft = sharp < Math.max(SCAN.SHARP_MIN, SCAN.SHARP_REL * st.maxSharp);
+      if (soft && st.wait < SCAN.MAX_WAIT_FRAMES) {
+        st.wait++;
+        return setHint("Focusing…");
+      }
+      if (autoCap && st.stable >= SCAN.STABLE_FRAMES) {
+        stopped = true;
+        cancelAnimationFrame(st.raf);
+        setHint("");
+        capture(quad, st.cover);
+        return;
+      }
+      setHint(autoCap ? "Hold still…" : "Card locked — tap to shoot");
+    };
+
+    st.raf = requestAnimationFrame(tick);
+    return () => {
+      stopped = true;
+      cancelAnimationFrame(st.raf);
+      try {
+        octx.clearRect(0, 0, bw, bh);
+      } catch (e) { /* canvas gone */ }
+      setHint("");
+    };
+  }, [status, autoCap]);
 
   async function onFile(e) {
     const file = e.target.files?.[0];
@@ -561,20 +771,44 @@ export function TimeCard() {
       ${status === "camera" && html`
         <div class="stage">
           <div class="stagebar">
-            <span>Align the card. Shoot it.</span>
+            <span>${hint || "Align the card"}</span>
             <button class="x" onClick=${() => { stopCamera(); setStatus("idle"); }}>Cancel</button>
           </div>
           <div class="stagebody">
             <div class="viewport">
               <video ref=${video} playsinline muted></video>
+              <canvas class="overlay" ref=${overlay}></canvas>
               <div class="guide">
                 <span class="tl"></span><span class="tr"></span><span class="bl"></span><span class="br"></span>
               </div>
+              ${hint && html`<div class="hint">${hint}</div>`}
             </div>
           </div>
           <div class="shutterbar">
-            <button class="shutter" onClick=${grabFrame} aria-label="Take photo"></button>
+            <button
+              class=${`chip ${autoCap ? "on" : ""}`}
+              onClick=${toggleAuto}
+              aria-pressed=${autoCap}
+            >Auto</button>
+            <button
+              class="shutter"
+              onClick=${() => capture(scan.current?.quad || null, scan.current?.cover || null)}
+              aria-label="Take photo"
+            ></button>
+            ${torchState.supported
+              ? html`<button
+                  class=${`chip ${torchState.on ? "on" : ""}`}
+                  onClick=${toggleTorch}
+                  aria-pressed=${torchState.on}
+                >Light</button>`
+              : html`<span class="chip-spacer"></span>`}
           </div>
+          <p class="capnote">
+            Your photo goes to Google's vision service to read the times, then it's dropped —
+            nothing is saved on our server.
+            <button class="linklike" onClick=${() => setPrivacy(true)}>Details</button>
+          </p>
+          <canvas ref=${sampler} class="probe" aria-hidden="true"></canvas>
         </div>
       `}
 
@@ -789,7 +1023,11 @@ export function TimeCard() {
           The times here are read from your photo by an AI, and it can misread a faint or
           crooked stamp. Look over every row against the card before you turn in your hours.
         </p>
-        <p class="footlink"><a href="/stats">Usage stats</a></p>
+        <p class="footlink">
+          <a href="/stats">Usage stats</a>
+          <span aria-hidden="true"> · </span>
+          <button class="linklike" onClick=${() => setPrivacy(true)}>Your photo &amp; privacy</button>
+        </p>
       </div>
 
       ${!lowConfSeen && uncertain > 0 && editing === null && html`
@@ -828,6 +1066,29 @@ export function TimeCard() {
           </div>
           <div class="tutfoot">
             <button class="btn btn-primary" onClick=${closeTutorial}>Got it</button>
+          </div>
+        </div>
+      `}
+
+      ${privacy && html`
+        <div class="dialog-backdrop">
+          <div class="dialog" role="dialog" aria-modal="true">
+            <div class="dialog-title">Your photo &amp; privacy</div>
+            <div class="dialog-body">
+              <p>
+                When you read a card, the photo is sent over HTTPS to Google's Gemini
+                vision service, which returns the times it can make out. Our server
+                only relays it — the image isn't written to disk or kept in any log.
+              </p>
+              <p>
+                Your card data (the punch rows and totals) stays in this browser and
+                is never uploaded. Trying the sample card uses a smaller model and
+                isn't counted anywhere.
+              </p>
+            </div>
+            <div class="dialog-actions">
+              <button class="btn btn-primary" onClick=${() => setPrivacy(false)}>Got it</button>
+            </div>
           </div>
         </div>
       `}

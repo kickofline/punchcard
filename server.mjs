@@ -618,6 +618,7 @@ const STATIC_ALLOW = new Set([
   "index.html",
   "app.mjs",
   "lib.mjs",
+  "scan.mjs",
   "styles.css",
   "sw.js",
   "manifest.webmanifest",
