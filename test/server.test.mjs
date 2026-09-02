@@ -8,6 +8,7 @@ import {
   validateReadBody,
   staticTarget,
   percentile,
+  minToHHMM,
   snapshot,
 } from "../server.mjs";
 
@@ -19,6 +20,13 @@ test("percentile uses nearest-rank on a sorted array", () => {
   assert.equal(percentile(s, 95), 50);
   assert.equal(percentile(s, 0), 10);
   assert.equal(percentile([], 50), 0);
+});
+
+test("minToHHMM formats minutes-of-day, null-safe", () => {
+  assert.equal(minToHHMM(0), "00:00");
+  assert.equal(minToHHMM(478), "07:58");
+  assert.equal(minToHHMM(1025), "17:05");
+  assert.equal(minToHHMM(null), null);
 });
 
 test("snapshot returns the expected shape on a fresh server", () => {
@@ -33,9 +41,22 @@ test("snapshot returns the expected shape on a fresh server", () => {
     "upstream",
     "zeroPunch",
   ]);
-  assert.equal(typeof s.latencyMs.p50, "number");
-  assert.equal(typeof s.models, "object");
-  assert.equal(typeof s.byDay, "object");
+  for (const k of [
+    "cardsScanned",
+    "distinctDevices",
+    "hoursClocked",
+    "shiftsRead",
+    "avgConfidence",
+    "geminiCalls",
+    "dataProcessedMB",
+    "byHour",
+    "byWeekday",
+    "punchesPerCard",
+  ]) {
+    assert.ok(k in s, `snapshot has ${k}`);
+  }
+  assert.equal(s.byHour.length, 24);
+  assert.equal(Object.keys(s.byWeekday).length, 7);
 });
 
 /* ------------------------------- staticTarget ---------------------------- */
@@ -151,6 +172,8 @@ test("validateReadBody accepts image + mimeType", () => {
   assert.deepEqual(validateReadBody({ image: "QUJD", mimeType: "image/png" }), {
     image: "QUJD",
     mimeType: "image/png",
+    clientId: null,
+    sample: false,
   });
 });
 
@@ -158,13 +181,15 @@ test("validateReadBody defaults the mimeType to image/jpeg", () => {
   assert.deepEqual(validateReadBody({ image: "QUJD" }), {
     image: "QUJD",
     mimeType: "image/jpeg",
+    clientId: null,
+    sample: false,
   });
 });
 
-test("validateReadBody unwraps a data: URL", () => {
+test("validateReadBody unwraps a data: URL and keeps clientId + sample", () => {
   assert.deepEqual(
-    validateReadBody({ image: "data:image/webp;base64,QUJD" }),
-    { image: "QUJD", mimeType: "image/webp" }
+    validateReadBody({ image: "data:image/webp;base64,QUJD", clientId: "abc", sample: true }),
+    { image: "QUJD", mimeType: "image/webp", clientId: "abc", sample: true }
   );
 });
 

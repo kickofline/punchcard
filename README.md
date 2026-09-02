@@ -42,7 +42,7 @@ node --test
 | `GEMINI_API_KEY` | — | required for `/api/read` |
 | `GEMINI_MODEL` | `gemini-flash-latest,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-flash-lite-latest` | comma list, newest first; the next model is tried when the one before is out of quota, overloaded, missing, or slow |
 | `GEMINI_TIMEOUT_MS` | `9000` | per-model deadline; a model that hasn't answered by then is abandoned for the next one |
-| `STATS_TOKEN` | — | if set, `GET /stats` requires `?key=<token>`; open otherwise |
+| `STATS_FILE` | `./.stats.json` | where `/stats` metrics persist; point at a mounted volume to survive redeploys |
 | `PORT` | `3000` | Coolify sets this automatically |
 | `HOST` | `0.0.0.0` | binds all interfaces (reachable from other devices on the LAN); set `127.0.0.1` for local-only |
 

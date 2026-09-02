@@ -47,6 +47,20 @@ const hms = (ms) => {
   return `${h}:${mn}:${sc}`;
 };
 
+/* a stable random id per browser, so /stats can count distinct devices */
+function clientId() {
+  try {
+    let v = localStorage.getItem("punchcard:client-id");
+    if (!v) {
+      v = (crypto.randomUUID && crypto.randomUUID()) || String(Math.random()).slice(2) + Date.now();
+      localStorage.setItem("punchcard:client-id", v);
+    }
+    return v;
+  } catch {
+    return null;
+  }
+}
+
 /* ------------------------------ local storage --------------------------------
    The component was written for a host that injected window.storage. On a plain
    static host that object does not exist, so this shim gives it the same shape
@@ -170,13 +184,13 @@ async function loadShot(file) {
 /* Send the photo to the server and consume its event stream. `onStep(text)` is
    called with a human status line as each model is tried. Resolves to the
    punch list. */
-async function readCardImage(dataURL, onStep = () => {}) {
+async function readCardImage(dataURL, onStep = () => {}, opts = {}) {
   let res;
   try {
     res = await fetch("/api/read", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image: dataURL }),
+      body: JSON.stringify({ image: dataURL, clientId: clientId(), sample: !!opts.sample }),
       signal: AbortSignal.timeout(55000),
     });
   } catch (e) {
@@ -466,20 +480,20 @@ export function TimeCard() {
         r.onerror = () => rej(new Error("read failed"));
         r.readAsDataURL(blob);
       });
-      await send({ src: dataURL });
+      await send({ src: dataURL }, { sample: true });
     } catch (err) {
       setError("Couldn't load the sample card.");
       setStatus("idle");
     }
   }
 
-  async function send(s) {
+  async function send(s, opts = {}) {
     setShot(s);
     setStatus("reading");
     setReadMsg("Sending the photo…");
     setError("");
     try {
-      const found = await readCardImage(s.src, setReadMsg);
+      const found = await readCardImage(s.src, setReadMsg, opts);
       const merged = layout([...punches, ...found]);
       const keys = new Set(found.map((p) => `${p.type}|${p.date}|${p.time}`));
       setFresh(merged.map((p, i) => (p && keys.has(`${p.type}|${p.date}|${p.time}`) ? i : -1)).filter((i) => i >= 0));

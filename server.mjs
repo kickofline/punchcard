@@ -7,21 +7,24 @@
                         quota / missing / slow. Default is a newest-to-oldest
                         cascade of flash models.
      GEMINI_TIMEOUT_MS  per-model deadline before giving up on it (default 9000)
+     STATS_FILE         where usage metrics persist (default ./.stats.json)
      PORT               default 3000
      HOST               default 0.0.0.0 (all interfaces); 127.0.0.1 for local only
 */
 
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { argv } from "node:process";
+import { layout, readCard } from "./lib.mjs";
 
 const ROOT = fileURLToPath(new URL(".", import.meta.url));
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || "0.0.0.0"; // all interfaces; set HOST=127.0.0.1 to keep it local
 const CALL_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS || 9000);
-const STATS_TOKEN = process.env.STATS_TOKEN || ""; // if set, /stats needs ?key=
+const STATS_FILE = process.env.STATS_FILE || join(ROOT, ".stats.json");
 const API_KEY = process.env.GEMINI_API_KEY || "";
 const MODELS = (
   process.env.GEMINI_MODEL ||
@@ -38,6 +41,11 @@ const MODELS = (
   .map((s) => s.trim())
   .filter(Boolean);
 const MAX_BODY = 8 * 1024 * 1024;
+const SAMPLE_MODELS = (process.env.GEMINI_SAMPLE_MODEL ||
+  "gemini-3.5-flash-lite,gemini-flash-lite-latest")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 const IMAGE_TYPES = new Set([
   "image/jpeg",
@@ -65,7 +73,11 @@ export function validateReadBody(body) {
   if (!IMAGE_TYPES.has(mimeType)) {
     throw new Error(`unsupported mime type: ${mimeType}`);
   }
-  return { image, mimeType };
+  const cidRaw = body && body.clientId;
+  const clientId =
+    typeof cidRaw === "string" && cidRaw.length > 0 && cidRaw.length <= 64 ? cidRaw : null;
+  const sample = !!(body && body.sample);
+  return { image, mimeType, clientId, sample };
 }
 
 export function isQuotaError(status, body) {
@@ -176,20 +188,23 @@ async function callGemini(model, image, mimeType) {
    cost every request. In-memory only; resets on restart. */
 let preferredModel = null;
 
-async function readCardImage(image, mimeType, onEvent = () => {}) {
+async function readCardImage(image, mimeType, onEvent = () => {}, opts = {}) {
+  const pool = opts.models || MODELS;
   const order =
-    preferredModel && MODELS.includes(preferredModel)
-      ? [preferredModel, ...MODELS.filter((m) => m !== preferredModel)]
-      : MODELS;
+    !opts.models && preferredModel && pool.includes(preferredModel)
+      ? [preferredModel, ...pool.filter((m) => m !== preferredModel)]
+      : pool;
 
   let lastErr = "no models configured";
   let lastBusy = false;
+  let attempts = 0;
   for (const model of order) {
+    attempts++;
     const t = Date.now();
     onEvent("try", { model });
     const { status, body } = await callGemini(model, image, mimeType);
     const ms = Date.now() - t;
-    recordModelCall(model, status === 200, ms);
+    if (!opts.noMetrics) recordModelCall(model, status === 200, ms);
     console.log(`  ${model} ${status} ${ms}ms`);
     if (status === 200) {
       const cand = body.candidates && body.candidates[0];
@@ -197,7 +212,7 @@ async function readCardImage(image, mimeType, onEvent = () => {}) {
         .map((p) => p.text || "")
         .join("");
       const finish = cand && cand.finishReason;
-      preferredModel = model;
+      if (!opts.models) preferredModel = model;
       let punches = [];
       let parseErr = null;
       try {
@@ -213,7 +228,7 @@ async function readCardImage(image, mimeType, onEvent = () => {}) {
             ` raw=${JSON.stringify(text).slice(0, 500)}`
         );
       }
-      return { punches, model, raw: text, finish: finish || null };
+      return { punches, model, raw: text, finish: finish || null, attempts };
     }
     lastErr = (body.error && body.error.message) || `HTTP ${status}`;
     lastBusy = shouldFallThrough(status, body);
@@ -238,6 +253,7 @@ async function readCardImage(image, mimeType, onEvent = () => {}) {
 
 const STARTED_AT = Date.now();
 const RING = 500;
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 /* nearest-rank percentile of a pre-sorted ascending array */
 export function percentile(sorted, p) {
@@ -246,13 +262,38 @@ export function percentile(sorted, p) {
   return sorted[i];
 }
 
+export const minToHHMM = (m) =>
+  m == null ? null : `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+
+const minuteOfDay = (p) => {
+  const [hh, mm] = String(p.time).split(":").map(Number);
+  return hh * 60 + mm;
+};
+
 const metrics = {
+  firstReadAt: null,
+  lastReadAt: null,
   reads: { total: 0, ok: 0, zeroPunch: 0, badRequest: 0, upstream: 0, busy: 0 },
+  cards: 0, // successful scans
   punchesReturned: 0,
+  shiftsRead: 0,
+  minutesClocked: 0,
+  lowConfPunches: 0,
+  confSum: 0,
+  confN: 0,
+  bytesProcessed: 0, // base64 chars processed
+  fallthroughs: 0, // reads that needed > 1 model
+  geminiCalls: 0,
   latency: [],
   models: new Map(), // name -> { calls, ok, fail, ms: [] }
   byDay: new Map(), // "YYYY-MM-DD" -> { reads, ok, zero }
-  lastReadAt: null,
+  byHour: new Array(24).fill(0),
+  byWeekday: new Array(7).fill(0),
+  punchesPerCard: new Map(), // count -> occurrences
+  clients: new Set(),
+  longestShiftMin: 0,
+  earliestInMin: null,
+  latestOutMin: null,
 };
 
 const ringPush = (arr, v) => {
@@ -265,6 +306,7 @@ const dayKey = (ts) => {
 };
 
 function recordModelCall(model, ok, ms) {
+  metrics.geminiCalls++;
   let m = metrics.models.get(model);
   if (!m) {
     m = { calls: 0, ok: 0, fail: 0, ms: [] };
@@ -275,34 +317,70 @@ function recordModelCall(model, ok, ms) {
   ringPush(m.ms, ms);
 }
 
-function recordRead(code, ms, punches) {
+function recordRead(code, ms, punches, extra = {}) {
+  const now = Date.now();
+  const list = Array.isArray(punches) ? punches : [];
   const r = metrics.reads;
   r.total++;
   if (code === 200) {
     r.ok++;
-    if (!punches) r.zeroPunch++;
+    if (!list.length) r.zeroPunch++;
   } else if (code === 400 || code === 413) r.badRequest++;
   else if (code === 503) r.busy++;
   else r.upstream++;
-  metrics.punchesReturned += punches || 0;
-  ringPush(metrics.latency, ms);
-  metrics.lastReadAt = Date.now();
 
-  const k = dayKey(Date.now());
-  let d = metrics.byDay.get(k);
-  if (!d) {
-    d = { reads: 0, ok: 0, zero: 0 };
-    metrics.byDay.set(k, d);
+  ringPush(metrics.latency, ms);
+  metrics.lastReadAt = now;
+  metrics.firstReadAt = metrics.firstReadAt || now;
+  metrics.bytesProcessed += extra.bytes || 0;
+  if (extra.attempts > 1) metrics.fallthroughs++;
+  if (extra.clientId && metrics.clients.size < 20000) metrics.clients.add(extra.clientId);
+
+  const d = new Date(now);
+  metrics.byHour[d.getHours()]++;
+  metrics.byWeekday[d.getDay()]++;
+
+  const k = dayKey(now);
+  let day = metrics.byDay.get(k);
+  if (!day) {
+    day = { reads: 0, ok: 0, zero: 0 };
+    metrics.byDay.set(k, day);
   }
-  d.reads++;
+  day.reads++;
+
   if (code === 200) {
-    d.ok++;
-    if (!punches) d.zero++;
+    day.ok++;
+    if (!list.length) day.zero++;
+    metrics.cards++;
+    metrics.punchesReturned += list.length;
+    metrics.punchesPerCard.set(list.length, (metrics.punchesPerCard.get(list.length) || 0) + 1);
+    for (const p of list) {
+      const c = p && p.confidence != null ? p.confidence : 1;
+      metrics.confSum += c;
+      metrics.confN++;
+      if (c < 0.6) metrics.lowConfPunches++;
+    }
+    try {
+      const { shifts } = readCard(layout(list));
+      metrics.shiftsRead += shifts.length;
+      for (const s of shifts) {
+        metrics.minutesClocked += s.minutes;
+        if (s.minutes > metrics.longestShiftMin) metrics.longestShiftMin = s.minutes;
+        const inM = minuteOfDay(s.in);
+        const outM = minuteOfDay(s.out);
+        if (metrics.earliestInMin == null || inM < metrics.earliestInMin) metrics.earliestInMin = inM;
+        if (metrics.latestOutMin == null || outM > metrics.latestOutMin) metrics.latestOutMin = outM;
+      }
+    } catch {
+      /* bad punch shape - skip the shift math */
+    }
   }
-  if (metrics.byDay.size > 21) {
+
+  if (metrics.byDay.size > 60) {
     const keys = [...metrics.byDay.keys()].sort();
-    while (metrics.byDay.size > 21) metrics.byDay.delete(keys.shift());
+    while (metrics.byDay.size > 60) metrics.byDay.delete(keys.shift());
   }
+  scheduleSave();
 }
 
 export function snapshot(now = Date.now()) {
@@ -320,16 +398,49 @@ export function snapshot(now = Date.now()) {
   }
   const byDay = {};
   for (const [k, d] of [...metrics.byDay.entries()].sort()) byDay[k] = d;
+  const perCard = {};
+  for (const [n, c] of [...metrics.punchesPerCard.entries()].sort((a, b) => a[0] - b[0])) perCard[n] = c;
+  const weekday = {};
+  metrics.byWeekday.forEach((v, i) => (weekday[WEEKDAYS[i]] = v));
+
   return {
     startedAt: new Date(STARTED_AT).toISOString(),
     uptimeSec: Math.round((now - STARTED_AT) / 1000),
-    preferredModel: preferredModel || null,
+    firstReadAt: metrics.firstReadAt ? new Date(metrics.firstReadAt).toISOString() : null,
     lastReadAt: metrics.lastReadAt ? new Date(metrics.lastReadAt).toISOString() : null,
+    preferredModel: preferredModel || null,
+
     reads: { ...metrics.reads },
-    punchesReturned: metrics.punchesReturned,
-    avgPunchesPerOkRead: metrics.reads.ok
-      ? Number((metrics.punchesReturned / metrics.reads.ok).toFixed(2))
+    cardsScanned: metrics.cards,
+    distinctDevices: metrics.clients.size,
+    zeroPunchRate: metrics.reads.ok
+      ? Number((metrics.reads.zeroPunch / metrics.reads.ok).toFixed(3))
       : 0,
+
+    punchesRead: metrics.punchesReturned,
+    shiftsRead: metrics.shiftsRead,
+    hoursClocked: Number((metrics.minutesClocked / 60).toFixed(1)),
+    avgPunchesPerCard: metrics.cards
+      ? Number((metrics.punchesReturned / metrics.cards).toFixed(2))
+      : 0,
+    avgShiftMinutes: metrics.shiftsRead
+      ? Math.round(metrics.minutesClocked / metrics.shiftsRead)
+      : 0,
+    longestShiftMinutes: metrics.longestShiftMin,
+    earliestClockIn: minToHHMM(metrics.earliestInMin),
+    latestClockOut: minToHHMM(metrics.latestOutMin),
+
+    avgConfidence: metrics.confN ? Number((metrics.confSum / metrics.confN).toFixed(3)) : null,
+    lowConfidenceRate: metrics.punchesReturned
+      ? Number((metrics.lowConfPunches / metrics.punchesReturned).toFixed(3))
+      : 0,
+
+    geminiCalls: metrics.geminiCalls,
+    modelFallthroughRate: metrics.reads.ok
+      ? Number((metrics.fallthroughs / metrics.reads.ok).toFixed(3))
+      : 0,
+    dataProcessedMB: Number(((metrics.bytesProcessed * 0.75) / 1e6).toFixed(2)),
+
     latencyMs: {
       p50: percentile(lat, 50),
       p95: percentile(lat, 95),
@@ -338,8 +449,98 @@ export function snapshot(now = Date.now()) {
     },
     models,
     byDay,
+    punchesPerCard: perCard,
+    byHour: [...metrics.byHour],
+    byWeekday: weekday,
   };
 }
+
+/* ------------------------------ persistence -------------------------- */
+
+function serializeStats() {
+  return JSON.stringify({
+    v: 1,
+    firstReadAt: metrics.firstReadAt,
+    lastReadAt: metrics.lastReadAt,
+    reads: metrics.reads,
+    cards: metrics.cards,
+    punchesReturned: metrics.punchesReturned,
+    shiftsRead: metrics.shiftsRead,
+    minutesClocked: metrics.minutesClocked,
+    lowConfPunches: metrics.lowConfPunches,
+    confSum: metrics.confSum,
+    confN: metrics.confN,
+    bytesProcessed: metrics.bytesProcessed,
+    fallthroughs: metrics.fallthroughs,
+    geminiCalls: metrics.geminiCalls,
+    latency: metrics.latency,
+    models: [...metrics.models.entries()],
+    byDay: [...metrics.byDay.entries()],
+    byHour: metrics.byHour,
+    byWeekday: metrics.byWeekday,
+    punchesPerCard: [...metrics.punchesPerCard.entries()],
+    clients: [...metrics.clients],
+    longestShiftMin: metrics.longestShiftMin,
+    earliestInMin: metrics.earliestInMin,
+    latestOutMin: metrics.latestOutMin,
+  });
+}
+
+function loadStats() {
+  try {
+    if (!existsSync(STATS_FILE)) return;
+    const d = JSON.parse(readFileSync(STATS_FILE, "utf8"));
+    Object.assign(metrics.reads, d.reads || {});
+    metrics.firstReadAt = d.firstReadAt ?? null;
+    metrics.lastReadAt = d.lastReadAt ?? null;
+    metrics.cards = d.cards || 0;
+    metrics.punchesReturned = d.punchesReturned || 0;
+    metrics.shiftsRead = d.shiftsRead || 0;
+    metrics.minutesClocked = d.minutesClocked || 0;
+    metrics.lowConfPunches = d.lowConfPunches || 0;
+    metrics.confSum = d.confSum || 0;
+    metrics.confN = d.confN || 0;
+    metrics.bytesProcessed = d.bytesProcessed || 0;
+    metrics.fallthroughs = d.fallthroughs || 0;
+    metrics.geminiCalls = d.geminiCalls || 0;
+    metrics.latency = Array.isArray(d.latency) ? d.latency.slice(-RING) : [];
+    metrics.models = new Map(d.models || []);
+    metrics.byDay = new Map(d.byDay || []);
+    metrics.byHour = Array.isArray(d.byHour) && d.byHour.length === 24 ? d.byHour : new Array(24).fill(0);
+    metrics.byWeekday =
+      Array.isArray(d.byWeekday) && d.byWeekday.length === 7 ? d.byWeekday : new Array(7).fill(0);
+    metrics.punchesPerCard = new Map(d.punchesPerCard || []);
+    metrics.clients = new Set(d.clients || []);
+    metrics.longestShiftMin = d.longestShiftMin || 0;
+    metrics.earliestInMin = d.earliestInMin ?? null;
+    metrics.latestOutMin = d.latestOutMin ?? null;
+    console.log(`stats: restored ${metrics.reads.total} reads from ${STATS_FILE}`);
+  } catch (e) {
+    console.log("stats: load failed -", e.message);
+  }
+}
+
+let saveTimer = null;
+function scheduleSave() {
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    try {
+      writeFileSync(STATS_FILE, serializeStats());
+    } catch (e) {
+      console.log("stats: save failed -", e.message);
+    }
+  }, 1500);
+}
+function flushStats() {
+  try {
+    writeFileSync(STATS_FILE, serializeStats());
+  } catch {
+    /* ignore */
+  }
+}
+
+loadStats();
 
 /* ------------------------------- http layer ----------------------------- */
 
@@ -396,7 +597,7 @@ async function handleRead(req, res) {
     }
   }
   if (tooBig) {
-    recordRead(413, 0, 0);
+    recordRead(413, 0, []);
     return sendJson(res, 413, { error: "image too large" });
   }
 
@@ -404,7 +605,7 @@ async function handleRead(req, res) {
   try {
     parsed = JSON.parse(raw);
   } catch {
-    recordRead(400, 0, 0);
+    recordRead(400, 0, []);
     return sendJson(res, 400, { error: "invalid JSON body" });
   }
 
@@ -412,9 +613,10 @@ async function handleRead(req, res) {
   try {
     clean = validateReadBody(parsed);
   } catch (e) {
-    recordRead(400, 0, 0);
+    recordRead(400, 0, []);
     return sendJson(res, 400, { error: e.message });
   }
+  const bytes = clean.image.length;
 
   // Body is valid: switch to an event stream so the page can narrate the
   // model attempts. HTTP status stays 200; success/failure is the last event.
@@ -428,12 +630,21 @@ async function handleRead(req, res) {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
 
+  // Sample-card reads use the cheap models only and are left out of the
+  // usage metrics so the demo doesn't skew the numbers.
+  const readOpts = clean.sample ? { models: SAMPLE_MODELS, noMetrics: true } : {};
+
   const t0 = Date.now();
   try {
-    const { punches, model, raw, finish } = await readCardImage(clean.image, clean.mimeType, emit);
+    const { punches, model, raw, finish, attempts } = await readCardImage(
+      clean.image,
+      clean.mimeType,
+      emit,
+      readOpts
+    );
     const ms = Date.now() - t0;
-    console.log(`/api/read done  ${model}  ${punches.length} punches  ${ms}ms`);
-    recordRead(200, ms, punches.length);
+    console.log(`/api/read done${clean.sample ? " [sample]" : ""}  ${model}  ${punches.length} punches  ${ms}ms`);
+    if (!clean.sample) recordRead(200, ms, punches, { bytes, attempts, clientId: clean.clientId });
     const done = { punches, model };
     if (!punches.length) {
       done.finish = finish || null;
@@ -442,8 +653,8 @@ async function handleRead(req, res) {
     emit("done", done);
   } catch (e) {
     const ms = Date.now() - t0;
-    console.log(`/api/read error  ${ms}ms  ${e.message || e}`);
-    recordRead(e.busy ? 503 : 502, ms, 0);
+    console.log(`/api/read error${clean.sample ? " [sample]" : ""}  ${ms}ms  ${e.message || e}`);
+    if (!clean.sample) recordRead(e.busy ? 503 : 502, ms, [], { bytes, clientId: clean.clientId });
     emit("error", { error: e.message || String(e), busy: !!e.busy });
   }
   res.end();
@@ -459,9 +670,13 @@ function statsHtml(s) {
         `<tr><td>${n}</td><td>${m.calls}</td><td>${m.ok}</td><td>${m.fail}</td><td>${m.p50_ms}</td><td>${m.p95_ms}</td></tr>`
     )
     .join("");
+  const barRow = (label, val, max) =>
+    `<div class="d"><span class="k">${label}</span><span class="bar" style="width:${Math.round(
+      (val / Math.max(1, max)) * 100
+    )}%"></span><span class="n">${val}</span></div>`;
   const days = Object.entries(s.byDay);
   const maxReads = Math.max(1, ...days.map(([, d]) => d.reads));
-  const bars = days
+  const dayBars = days
     .map(
       ([k, d]) =>
         `<div class="d"><span class="k">${k}</span><span class="bar" style="width:${Math.round(
@@ -469,47 +684,71 @@ function statsHtml(s) {
         )}%"></span><span class="n">${d.reads} r / ${d.ok} ok / ${d.zero} zero</span></div>`
     )
     .join("");
+  const hourMax = Math.max(1, ...s.byHour);
+  const hourBars = s.byHour
+    .map((v, h) => barRow(String(h).padStart(2, "0") + ":00", v, hourMax))
+    .join("");
+  const wdMax = Math.max(1, ...Object.values(s.byWeekday));
+  const wdBars = Object.entries(s.byWeekday)
+    .map(([w, v]) => barRow(w, v, wdMax))
+    .join("");
+  const pcMax = Math.max(1, ...Object.values(s.punchesPerCard));
+  const pcBars = Object.entries(s.punchesPerCard)
+    .map(([n, v]) => barRow(n + " punches", v, pcMax))
+    .join("");
   return `<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <title>punchcard stats</title><style>
 :root{--ink:#201e1d;--red:#ec3013}
 body{margin:0;padding:24px;font:14px/1.5 ui-monospace,Menlo,Consolas,monospace;color:var(--ink);background:#fff}
 h1{font-size:16px;letter-spacing:.06em;text-transform:uppercase;border-bottom:2px solid var(--ink);padding-bottom:8px}
 h2{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#605d5d;margin:22px 0 8px}
-table{border-collapse:collapse;width:100%;max-width:640px}
+table{border-collapse:collapse;width:100%;max-width:520px}
 td,th{border:1px solid var(--ink);padding:5px 9px;text-align:left}
 th{background:#f3f2f2;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
-.d{display:flex;align-items:center;gap:8px;max-width:720px;margin:2px 0;font-size:12px}
-.d .k{width:92px;flex:none}
-.d .bar{height:12px;background:var(--red);flex:none}
+.d{display:flex;align-items:center;gap:8px;max-width:640px;margin:2px 0;font-size:12px}
+.d .k{width:110px;flex:none}
+.d .bar{height:12px;background:var(--red);flex:none;min-width:2px}
 .d .n{color:#605d5d}
 </style>
 <h1>punchcard / ops</h1>
 <table>
-${row("started", s.startedAt)}
-${row("uptime", s.uptimeSec + " s")}
-${row("preferred model", s.preferredModel || "-")}
+${row("started / uptime", s.startedAt + " (" + s.uptimeSec + " s)")}
+${row("first read", s.firstReadAt || "-")}
 ${row("last read", s.lastReadAt || "-")}
-${row("reads total", s.reads.total)}
-${row("ok", s.reads.ok)}
-${row("zero-punch", s.reads.zeroPunch)}
-${row("bad request", s.reads.badRequest)}
-${row("upstream error", s.reads.upstream)}
-${row("busy", s.reads.busy)}
-${row("punches returned", s.punchesReturned)}
-${row("avg punches / ok read", s.avgPunchesPerOkRead)}
+${row("preferred model", s.preferredModel || "-")}
+${row("reads (total)", s.reads.total)}
+${row("ok / zero-punch / bad / upstream / busy", [s.reads.ok, s.reads.zeroPunch, s.reads.badRequest, s.reads.upstream, s.reads.busy].join(" / "))}
+${row("cards scanned", s.cardsScanned)}
+${row("distinct devices", s.distinctDevices)}
+${row("zero-punch rate", s.zeroPunchRate)}
+${row("punches read", s.punchesRead)}
+${row("shifts read", s.shiftsRead)}
+${row("hours clocked", s.hoursClocked)}
+${row("avg punches / card", s.avgPunchesPerCard)}
+${row("avg shift (min)", s.avgShiftMinutes)}
+${row("longest shift (min)", s.longestShiftMinutes)}
+${row("earliest clock-in / latest clock-out", (s.earliestClockIn || "-") + " / " + (s.latestClockOut || "-"))}
+${row("avg confidence", s.avgConfidence ?? "-")}
+${row("low-confidence rate", s.lowConfidenceRate)}
+${row("gemini calls", s.geminiCalls)}
+${row("model fallthrough rate", s.modelFallthroughRate)}
+${row("data processed (MB)", s.dataProcessedMB)}
 ${row("latency p50 / p95 / max ms", s.latencyMs.p50 + " / " + s.latencyMs.p95 + " / " + s.latencyMs.max)}
 </table>
 <h2>Models</h2>
 <table><tr><th>model</th><th>calls</th><th>ok</th><th>fail</th><th>p50 ms</th><th>p95 ms</th></tr>${models || '<tr><td colspan=6>none yet</td></tr>'}</table>
-<h2>By day</h2>
-${bars || "<p>none yet</p>"}`;
+<h2>Reads by day</h2>
+${dayBars || "<p>none yet</p>"}
+<h2>Reads by hour</h2>
+${hourBars}
+<h2>Reads by weekday</h2>
+${wdBars}
+<h2>Punches per card</h2>
+${pcBars || "<p>none yet</p>"}`;
 }
 
 function handleStats(req, res) {
   const url = new URL(req.url, "http://x");
-  if (STATS_TOKEN && url.searchParams.get("key") !== STATS_TOKEN) {
-    return sendJson(res, 401, { error: "stats token required" });
-  }
   const snap = snapshot();
   const wantsHtml = /text\/html/.test(req.headers.accept || "") || url.searchParams.has("html");
   if (wantsHtml) {
@@ -580,4 +819,10 @@ if (argv[1] && argv[1] === import.meta.filename) {
   server.listen(PORT, HOST, () => {
     console.log(`punchcard on ${HOST}:${PORT}  models: ${MODELS.join(" -> ")}`);
   });
+  for (const sig of ["SIGTERM", "SIGINT"]) {
+    process.on(sig, () => {
+      flushStats();
+      process.exit(0);
+    });
+  }
 }
