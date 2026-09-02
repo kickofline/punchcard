@@ -24,6 +24,8 @@ import {
 
 const html = htmFactory.bind(h);
 
+const HOURS_URL = "https://info.obu.edu/info/p3/WS_STUHOURS.php?P3PROG=WS_STUHOURS";
+
 /* ------------------------------ local storage --------------------------------
    The component was written for a host that injected window.storage. On a plain
    static host that object does not exist, so this shim gives it the same shape
@@ -232,6 +234,11 @@ export function TimeCard() {
   const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState("");
   const [lowConfSeen, setLowConfSeen] = useState(true);
+
+  function copyAndLog(text, key) {
+    copy(text, key);
+    window.open(HOURS_URL, "_blank", "noopener");
+  }
   const [fresh, setFresh] = useState([]);
   const [copied, setCopied] = useState(null);
   const [shot, setShot] = useState(null);
@@ -489,7 +496,7 @@ export function TimeCard() {
         <div class="stats">
           <button
             class="stat"
-            onClick=${() => last && copy(hrs(last.minutes), "last")}
+            onClick=${() => last && copyAndLog(hrs(last.minutes), "last")}
             disabled=${!last}
           >
             <span class="tag">Last shift</span>
@@ -499,11 +506,11 @@ export function TimeCard() {
                 ? `${clock12(last.in)}–${clock12(last.out)} · ${last.minutes} min`
                 : "No completed shift"}
             </span>
-            <span class="cue">${copied === "last" ? "Copied" : last ? "Tap to copy" : ""}</span>
+            <span class="cue">${copied === "last" ? "Copied · opening OBU" : last ? "Tap: copy + open OBU" : ""}</span>
           </button>
           <button
             class="stat today"
-            onClick=${() => todayRow && copy(hrs(todayRow.minutes), "today")}
+            onClick=${() => todayRow && copyAndLog(hrs(todayRow.minutes), "today")}
             disabled=${!todayRow}
           >
             <span class="tag">Today</span>
@@ -513,7 +520,7 @@ export function TimeCard() {
                 ? `${todayRow.list.length} shift${todayRow.list.length === 1 ? "" : "s"} · ${todayRow.minutes} min`
                 : "No shifts today"}
             </span>
-            <span class="cue">${copied === "today" ? "Copied" : todayRow ? "Tap to copy" : ""}</span>
+            <span class="cue">${copied === "today" ? "Copied · opening OBU" : todayRow ? "Tap: copy + open OBU" : ""}</span>
           </button>
         </div>
 
