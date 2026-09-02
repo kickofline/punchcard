@@ -176,13 +176,16 @@ body {
 .stat .figure { display: block; font-size: 32px; font-weight: 800; font-variant-numeric: tabular-nums; margin: 4px 0 2px; color: var(--color-accent-700); }
 .stat.today .figure { color: var(--color-text); }
 .stat .sub { display: block; font-size: 11px; text-transform: uppercase; color: var(--color-neutral-700); }
+.stat .running { color: var(--color-accent-700); font-weight: 800; font-variant-numeric: tabular-nums; }
 .stat .cue { display: block; margin-top: 5px; font-size: 10px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: var(--color-accent-700); min-height: 1em; }
 
 /* ------------------------------- actions ------------------------------- */
 
-.actions { display: flex; border: var(--ink); margin-bottom: 18px; }
+.actions { display: flex; border: var(--ink); margin-bottom: 10px; }
 .actions .btn { flex: 1; border: 0; }
 .actions .btn:first-child { border-right: var(--ink); }
+
+.punchnow { width: 100%; margin-bottom: 18px; }
 
 .err {
   border: 2px solid var(--color-accent);
@@ -251,6 +254,22 @@ body {
 .dur { margin-left: auto; font-size: 12px; font-weight: 800; font-variant-numeric: tabular-nums; text-transform: uppercase; }
 .dur.flag { color: var(--color-accent-700); }
 .empty { padding: 24px 12px; font-size: 13px; text-transform: uppercase; color: var(--color-neutral-700); }
+.samplebtn {
+  display: block;
+  margin-top: 14px;
+  background: none;
+  border: 0;
+  padding: 0;
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 13px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--color-accent-700);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
 
 .row.editing { background: var(--color-accent-100); }
 .editor { display: flex; gap: 8px; padding: 12px; align-items: center; flex-wrap: wrap; width: 100%; }

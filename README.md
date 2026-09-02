@@ -15,6 +15,9 @@ a misread is a quick fix.
 - **`server.mjs`** — a zero-dependency Node server that serves the static app
   **and** exposes `POST /api/read`, which relays the photo to the Google Gemini
   vision API. The API key lives only on the server, never in the browser.
+  Also serves `GET /healthz` and `GET /stats` (JSON, or `?html=1` for a page)
+  with in-memory usage metrics — read counts, per-model latency, per-day
+  volume; resets on restart.
 
 ## Run locally
 
@@ -39,6 +42,7 @@ node --test
 | `GEMINI_API_KEY` | — | required for `/api/read` |
 | `GEMINI_MODEL` | `gemini-flash-latest,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-flash-lite-latest` | comma list, newest first; the next model is tried when the one before is out of quota, overloaded, missing, or slow |
 | `GEMINI_TIMEOUT_MS` | `9000` | per-model deadline; a model that hasn't answered by then is abandoned for the next one |
+| `STATS_TOKEN` | — | if set, `GET /stats` requires `?key=<token>`; open otherwise |
 | `PORT` | `3000` | Coolify sets this automatically |
 | `HOST` | `0.0.0.0` | binds all interfaces (reachable from other devices on the LAN); set `127.0.0.1` for local-only |
 

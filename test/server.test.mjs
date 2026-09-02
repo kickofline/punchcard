@@ -7,7 +7,36 @@ import {
   shouldFallThrough,
   validateReadBody,
   staticTarget,
+  percentile,
+  snapshot,
 } from "../server.mjs";
+
+/* -------------------------------- metrics ------------------------------ */
+
+test("percentile uses nearest-rank on a sorted array", () => {
+  const s = [10, 20, 30, 40, 50];
+  assert.equal(percentile(s, 50), 30);
+  assert.equal(percentile(s, 95), 50);
+  assert.equal(percentile(s, 0), 10);
+  assert.equal(percentile([], 50), 0);
+});
+
+test("snapshot returns the expected shape on a fresh server", () => {
+  const s = snapshot();
+  assert.equal(typeof s.startedAt, "string");
+  assert.equal(typeof s.uptimeSec, "number");
+  assert.deepEqual(Object.keys(s.reads).sort(), [
+    "badRequest",
+    "busy",
+    "ok",
+    "total",
+    "upstream",
+    "zeroPunch",
+  ]);
+  assert.equal(typeof s.latencyMs.p50, "number");
+  assert.equal(typeof s.models, "object");
+  assert.equal(typeof s.byDay, "object");
+});
 
 /* ------------------------------- staticTarget ---------------------------- */
 

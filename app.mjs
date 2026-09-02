@@ -33,6 +33,20 @@ const IS_STANDALONE =
   ((window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) ||
     window.navigator?.standalone === true);
 
+/* wall-clock ms for a {date:"YYYY-MM-DD", time:"HH:MM"} in the viewer's tz */
+const localMs = (p) => {
+  const [y, m, d] = p.date.split("-").map(Number);
+  const [hh, mm] = p.time.split(":").map(Number);
+  return new Date(y, m - 1, d, hh, mm).getTime();
+};
+const hms = (ms) => {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(s / 3600);
+  const mn = String(Math.floor((s % 3600) / 60)).padStart(2, "0");
+  const sc = String(s % 60).padStart(2, "0");
+  return `${h}:${mn}:${sc}`;
+};
+
 /* ------------------------------ local storage --------------------------------
    The component was written for a host that injected window.storage. On a plain
    static host that object does not exist, so this shim gives it the same shape
@@ -242,6 +256,7 @@ export function TimeCard() {
   const [error, setError] = useState("");
   const [lowConfSeen, setLowConfSeen] = useState(true);
   const [tutorial, setTutorial] = useState(false);
+  const [clockTick, setClockTick] = useState(0);
   const [installEvt, setInstallEvt] = useState(null);
   const [installHidden, setInstallHidden] = useState(true);
   const [iosHelp, setIosHelp] = useState(false);
@@ -332,6 +347,15 @@ export function TimeCard() {
   const otherMinutes = Math.max(0, parseInt(other, 10) || 0);
   const totalMinutes = cardMinutes + otherMinutes;
   const open = shifts.find((s) => s.open);
+
+  useEffect(() => {
+    if (!open) return;
+    const id = setInterval(() => setClockTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [!!open]);
+  // clockTick just forces the re-render; the value is read live off the wall clock
+  void clockTick;
+  const runningMs = open ? Date.now() - localMs(open.in) : 0;
 
   const today = todayISO();
   const byDay = useMemo(() => {
@@ -432,6 +456,23 @@ export function TimeCard() {
     }
   }
 
+  async function trySample() {
+    setError("");
+    try {
+      const blob = await (await fetch("/sample-card.jpg")).blob();
+      const dataURL = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result);
+        r.onerror = () => rej(new Error("read failed"));
+        r.readAsDataURL(blob);
+      });
+      await send({ src: dataURL });
+    } catch (err) {
+      setError("Couldn't load the sample card.");
+      setStatus("idle");
+    }
+  }
+
   async function send(s) {
     setShot(s);
     setStatus("reading");
@@ -482,6 +523,13 @@ export function TimeCard() {
       setDraft({ date: p.date, time: p.time });
       setEditing(idx);
     }
+  }
+  function punchNow() {
+    setEditing(null);
+    setPunches([
+      ...grid.filter(Boolean),
+      { type: open ? "OUT" : "IN", date: todayISO(), time: nowHM() },
+    ]);
   }
   function clearCard() {
     setPunches([]);
@@ -580,7 +628,9 @@ export function TimeCard() {
             <span class="tag">Today</span>
             <span class="figure">${todayRow ? hrs(todayRow.minutes) : "0.00"}</span>
             <span class="sub">
-              ${todayRow
+              ${open
+                ? html`<span class="running">Running ${hms(runningMs)}</span>`
+                : todayRow
                 ? `${todayRow.list.length} shift${todayRow.list.length === 1 ? "" : "s"} · ${todayRow.minutes} min`
                 : "No shifts today"}
             </span>
@@ -592,6 +642,12 @@ export function TimeCard() {
           <button class="btn btn-primary" onClick=${openCamera}>Take photo</button>
           <button class="btn btn-secondary" onClick=${() => library.current.click()}>Choose photo</button>
         </div>
+        <button
+          class=${`btn punchnow ${open ? "btn-primary" : "btn-secondary"}`}
+          onClick=${punchNow}
+        >
+          ${open ? "Punch out now" : "Punch in now"}
+        </button>
         <input ref=${library} type="file" accept="image/*" onChange=${onFile} hidden />
         ${error && html`<div class="err">${error}</div>`}
 
@@ -603,7 +659,10 @@ export function TimeCard() {
 
           <div class="grid">
             ${rows.length === 0 && editing === null && html`
-              <div class="empty">No punches. Photograph the card, or add one by hand.</div>
+              <div class="empty">
+                No punches. Photograph the card, or add one by hand.
+                <button class="samplebtn" onClick=${trySample}>Try a sample card</button>
+              </div>
             `}
             ${rows.map(({ p, i }) => {
               const shift = shifts.find((s) => s.slot === (i % 2 === 0 ? i : i - 1));

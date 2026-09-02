@@ -21,6 +21,7 @@ const ROOT = fileURLToPath(new URL(".", import.meta.url));
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || "0.0.0.0"; // all interfaces; set HOST=127.0.0.1 to keep it local
 const CALL_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS || 9000);
+const STATS_TOKEN = process.env.STATS_TOKEN || ""; // if set, /stats needs ?key=
 const API_KEY = process.env.GEMINI_API_KEY || "";
 const MODELS = (
   process.env.GEMINI_MODEL ||
@@ -188,6 +189,7 @@ async function readCardImage(image, mimeType, onEvent = () => {}) {
     onEvent("try", { model });
     const { status, body } = await callGemini(model, image, mimeType);
     const ms = Date.now() - t;
+    recordModelCall(model, status === 200, ms);
     console.log(`  ${model} ${status} ${ms}ms`);
     if (status === 200) {
       const cand = body.candidates && body.candidates[0];
@@ -232,6 +234,113 @@ async function readCardImage(image, mimeType, onEvent = () => {}) {
   throw e;
 }
 
+/* ------------------------------- ops metrics --------------------------- */
+
+const STARTED_AT = Date.now();
+const RING = 500;
+
+/* nearest-rank percentile of a pre-sorted ascending array */
+export function percentile(sorted, p) {
+  if (!sorted.length) return 0;
+  const i = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1));
+  return sorted[i];
+}
+
+const metrics = {
+  reads: { total: 0, ok: 0, zeroPunch: 0, badRequest: 0, upstream: 0, busy: 0 },
+  punchesReturned: 0,
+  latency: [],
+  models: new Map(), // name -> { calls, ok, fail, ms: [] }
+  byDay: new Map(), // "YYYY-MM-DD" -> { reads, ok, zero }
+  lastReadAt: null,
+};
+
+const ringPush = (arr, v) => {
+  arr.push(v);
+  if (arr.length > RING) arr.shift();
+};
+const dayKey = (ts) => {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+
+function recordModelCall(model, ok, ms) {
+  let m = metrics.models.get(model);
+  if (!m) {
+    m = { calls: 0, ok: 0, fail: 0, ms: [] };
+    metrics.models.set(model, m);
+  }
+  m.calls++;
+  ok ? m.ok++ : m.fail++;
+  ringPush(m.ms, ms);
+}
+
+function recordRead(code, ms, punches) {
+  const r = metrics.reads;
+  r.total++;
+  if (code === 200) {
+    r.ok++;
+    if (!punches) r.zeroPunch++;
+  } else if (code === 400 || code === 413) r.badRequest++;
+  else if (code === 503) r.busy++;
+  else r.upstream++;
+  metrics.punchesReturned += punches || 0;
+  ringPush(metrics.latency, ms);
+  metrics.lastReadAt = Date.now();
+
+  const k = dayKey(Date.now());
+  let d = metrics.byDay.get(k);
+  if (!d) {
+    d = { reads: 0, ok: 0, zero: 0 };
+    metrics.byDay.set(k, d);
+  }
+  d.reads++;
+  if (code === 200) {
+    d.ok++;
+    if (!punches) d.zero++;
+  }
+  if (metrics.byDay.size > 21) {
+    const keys = [...metrics.byDay.keys()].sort();
+    while (metrics.byDay.size > 21) metrics.byDay.delete(keys.shift());
+  }
+}
+
+export function snapshot(now = Date.now()) {
+  const lat = [...metrics.latency].sort((a, b) => a - b);
+  const models = {};
+  for (const [name, m] of metrics.models) {
+    const s = [...m.ms].sort((a, b) => a - b);
+    models[name] = {
+      calls: m.calls,
+      ok: m.ok,
+      fail: m.fail,
+      p50_ms: percentile(s, 50),
+      p95_ms: percentile(s, 95),
+    };
+  }
+  const byDay = {};
+  for (const [k, d] of [...metrics.byDay.entries()].sort()) byDay[k] = d;
+  return {
+    startedAt: new Date(STARTED_AT).toISOString(),
+    uptimeSec: Math.round((now - STARTED_AT) / 1000),
+    preferredModel: preferredModel || null,
+    lastReadAt: metrics.lastReadAt ? new Date(metrics.lastReadAt).toISOString() : null,
+    reads: { ...metrics.reads },
+    punchesReturned: metrics.punchesReturned,
+    avgPunchesPerOkRead: metrics.reads.ok
+      ? Number((metrics.punchesReturned / metrics.reads.ok).toFixed(2))
+      : 0,
+    latencyMs: {
+      p50: percentile(lat, 50),
+      p95: percentile(lat, 95),
+      max: lat[lat.length - 1] || 0,
+      samples: lat.length,
+    },
+    models,
+    byDay,
+  };
+}
+
 /* ------------------------------- http layer ----------------------------- */
 
 const MIME = {
@@ -242,6 +351,7 @@ const MIME = {
   ".woff2": "font/woff2",
   ".webmanifest": "application/manifest+json",
   ".png": "image/png",
+  ".jpg": "image/jpeg",
   ".svg": "image/svg+xml",
 };
 
@@ -254,6 +364,7 @@ const STATIC_ALLOW = new Set([
   "styles.css",
   "sw.js",
   "manifest.webmanifest",
+  "sample-card.jpg",
   "vendor/preact.mjs",
   "vendor/hooks.mjs",
   "vendor/htm.mjs",
@@ -284,12 +395,16 @@ async function handleRead(req, res) {
       break;
     }
   }
-  if (tooBig) return sendJson(res, 413, { error: "image too large" });
+  if (tooBig) {
+    recordRead(413, 0, 0);
+    return sendJson(res, 413, { error: "image too large" });
+  }
 
   let parsed;
   try {
     parsed = JSON.parse(raw);
   } catch {
+    recordRead(400, 0, 0);
     return sendJson(res, 400, { error: "invalid JSON body" });
   }
 
@@ -297,6 +412,7 @@ async function handleRead(req, res) {
   try {
     clean = validateReadBody(parsed);
   } catch (e) {
+    recordRead(400, 0, 0);
     return sendJson(res, 400, { error: e.message });
   }
 
@@ -315,7 +431,9 @@ async function handleRead(req, res) {
   const t0 = Date.now();
   try {
     const { punches, model, raw, finish } = await readCardImage(clean.image, clean.mimeType, emit);
-    console.log(`/api/read done  ${model}  ${punches.length} punches  ${Date.now() - t0}ms`);
+    const ms = Date.now() - t0;
+    console.log(`/api/read done  ${model}  ${punches.length} punches  ${ms}ms`);
+    recordRead(200, ms, punches.length);
     const done = { punches, model };
     if (!punches.length) {
       done.finish = finish || null;
@@ -323,10 +441,84 @@ async function handleRead(req, res) {
     }
     emit("done", done);
   } catch (e) {
-    console.log(`/api/read error  ${Date.now() - t0}ms  ${e.message || e}`);
+    const ms = Date.now() - t0;
+    console.log(`/api/read error  ${ms}ms  ${e.message || e}`);
+    recordRead(e.busy ? 503 : 502, ms, 0);
     emit("error", { error: e.message || String(e), busy: !!e.busy });
   }
   res.end();
+}
+
+/* -------------------------------- /stats ------------------------------ */
+
+function statsHtml(s) {
+  const row = (k, v) => `<tr><td>${k}</td><td>${v}</td></tr>`;
+  const models = Object.entries(s.models)
+    .map(
+      ([n, m]) =>
+        `<tr><td>${n}</td><td>${m.calls}</td><td>${m.ok}</td><td>${m.fail}</td><td>${m.p50_ms}</td><td>${m.p95_ms}</td></tr>`
+    )
+    .join("");
+  const days = Object.entries(s.byDay);
+  const maxReads = Math.max(1, ...days.map(([, d]) => d.reads));
+  const bars = days
+    .map(
+      ([k, d]) =>
+        `<div class="d"><span class="k">${k}</span><span class="bar" style="width:${Math.round(
+          (d.reads / maxReads) * 100
+        )}%"></span><span class="n">${d.reads} r / ${d.ok} ok / ${d.zero} zero</span></div>`
+    )
+    .join("");
+  return `<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>punchcard stats</title><style>
+:root{--ink:#201e1d;--red:#ec3013}
+body{margin:0;padding:24px;font:14px/1.5 ui-monospace,Menlo,Consolas,monospace;color:var(--ink);background:#fff}
+h1{font-size:16px;letter-spacing:.06em;text-transform:uppercase;border-bottom:2px solid var(--ink);padding-bottom:8px}
+h2{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#605d5d;margin:22px 0 8px}
+table{border-collapse:collapse;width:100%;max-width:640px}
+td,th{border:1px solid var(--ink);padding:5px 9px;text-align:left}
+th{background:#f3f2f2;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+.d{display:flex;align-items:center;gap:8px;max-width:720px;margin:2px 0;font-size:12px}
+.d .k{width:92px;flex:none}
+.d .bar{height:12px;background:var(--red);flex:none}
+.d .n{color:#605d5d}
+</style>
+<h1>punchcard / ops</h1>
+<table>
+${row("started", s.startedAt)}
+${row("uptime", s.uptimeSec + " s")}
+${row("preferred model", s.preferredModel || "-")}
+${row("last read", s.lastReadAt || "-")}
+${row("reads total", s.reads.total)}
+${row("ok", s.reads.ok)}
+${row("zero-punch", s.reads.zeroPunch)}
+${row("bad request", s.reads.badRequest)}
+${row("upstream error", s.reads.upstream)}
+${row("busy", s.reads.busy)}
+${row("punches returned", s.punchesReturned)}
+${row("avg punches / ok read", s.avgPunchesPerOkRead)}
+${row("latency p50 / p95 / max ms", s.latencyMs.p50 + " / " + s.latencyMs.p95 + " / " + s.latencyMs.max)}
+</table>
+<h2>Models</h2>
+<table><tr><th>model</th><th>calls</th><th>ok</th><th>fail</th><th>p50 ms</th><th>p95 ms</th></tr>${models || '<tr><td colspan=6>none yet</td></tr>'}</table>
+<h2>By day</h2>
+${bars || "<p>none yet</p>"}`;
+}
+
+function handleStats(req, res) {
+  const url = new URL(req.url, "http://x");
+  if (STATS_TOKEN && url.searchParams.get("key") !== STATS_TOKEN) {
+    return sendJson(res, 401, { error: "stats token required" });
+  }
+  const snap = snapshot();
+  const wantsHtml = /text\/html/.test(req.headers.accept || "") || url.searchParams.has("html");
+  if (wantsHtml) {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+    res.end(statsHtml(snap));
+  } else {
+    res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+    res.end(JSON.stringify(snap, null, 2));
+  }
 }
 
 /* Resolve a request path to an allow-listed file name, or null. */
@@ -362,9 +554,20 @@ async function serveStatic(req, res) {
 }
 
 export const server = createServer((req, res) => {
-  if (req.method === "POST" && (req.url || "").split("?")[0] === "/api/read") {
+  const path = (req.url || "").split("?")[0];
+  if (req.method === "POST" && path === "/api/read") {
     handleRead(req, res).catch((e) => sendJson(res, 500, { error: String(e) }));
     return;
+  }
+  if (req.method === "GET") {
+    if (path === "/healthz") {
+      res.writeHead(200, { "Content-Type": "text/plain", "Cache-Control": "no-store" }).end("ok");
+      return;
+    }
+    if (path === "/stats") {
+      handleStats(req, res);
+      return;
+    }
   }
   if (req.method === "GET" || req.method === "HEAD") {
     serveStatic(req, res).catch(() => res.writeHead(500).end("error"));
