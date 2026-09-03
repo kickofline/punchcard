@@ -914,11 +914,6 @@ export function TimeCard() {
                 >Light</button>`
               : html`<span class="chip-spacer"></span>`}
           </div>
-          <p class="capnote">
-            Your photo is sent to Google's vision service to read the times. With sharing
-            on (the default), a copy and the result are also kept to improve accuracy.
-            <button class="linklike" onClick=${() => setPrivacy(true)}>Details</button>
-          </p>
           <canvas ref=${sampler} class="probe" aria-hidden="true"></canvas>
         </div>
       `}

@@ -526,17 +526,6 @@ body {
 .chip-spacer { min-width: 58px; }
 .confirmbar { gap: 12px; }
 .confirmbar .usebtn { flex: 1; max-width: 260px; }
-.capnote {
-  margin: 0;
-  padding: 12px 18px calc(14px + env(safe-area-inset-bottom, 0px));
-  background: #111;
-  color: rgba(255, 255, 255, 0.62);
-  font-size: 10px;
-  line-height: 1.5;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  text-align: center;
-}
 .linklike {
   background: none;
   border: 0;
@@ -548,7 +537,6 @@ body {
   text-decoration: underline;
   cursor: pointer;
 }
-.capnote .linklike { color: #fff; }
 
 .frame {
   position: relative;
