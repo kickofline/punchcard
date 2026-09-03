@@ -930,7 +930,7 @@ export function TimeCard() {
             <button class="x" onClick=${confirmCancel}>Cancel</button>
           </div>
           <div class="stagebody">
-            <div class="frame">
+            <div class="frame full">
               <img src=${pending.src} alt="Photo you just took" />
             </div>
           </div>
@@ -950,7 +950,7 @@ export function TimeCard() {
             <span class="elapsed">${elapsed}s</span>
           </div>
           <div class="stagebody">
-            <div class="frame">
+            <div class="frame full">
               <img src=${shot.src} alt="Photo of the time card" />
               <div class="bar"></div>
             </div>
