@@ -206,7 +206,6 @@ body {
   margin-top: 1px;
   accent-color: var(--color-accent);
 }
-.contrib .linklike { color: var(--color-accent-700); white-space: nowrap; }
 
 .err {
   border: 2px solid var(--color-accent);

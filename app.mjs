@@ -1156,10 +1156,7 @@ export function TimeCard() {
         </p>
         <label class="contrib">
           <input type="checkbox" checked=${contribute} onChange=${toggleContribute} />
-          <span>
-            Share my card photos to improve the reader.
-            <button type="button" class="linklike" onClick=${() => setPrivacy(true)}>What's kept</button>
-          </span>
+          <span>Share my card photos to improve the reader.</span>
         </label>
         <p class="footlink">
           <a href="/stats">Usage stats</a>
