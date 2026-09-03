@@ -99,7 +99,9 @@ export function validateReadBody(body) {
   // the client opts in (its checkbox defaults on) to keeping the photo +
   // reader output to improve accuracy; never for the built-in sample card
   const contribute = !sample && !!(body && body.contribute === true);
-  return { image, mimeType, clientId, sample, contribute };
+  // "fast mode": run the read on the lite model pool only
+  const fast = !sample && !!(body && body.fast === true);
+  return { image, mimeType, clientId, sample, contribute, fast };
 }
 
 /* Contribution ids are a timestamp + short suffix; keep any lookup strictly to
@@ -899,9 +901,14 @@ async function handleRead(req, res) {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
 
-  // Sample-card reads use the cheap models only and are left out of the
-  // usage metrics so the demo doesn't skew the numbers.
-  const readOpts = clean.sample ? { models: SAMPLE_MODELS, noMetrics: true } : {};
+  // Sample-card reads use the cheap models only and are left out of the usage
+  // metrics so the demo doesn't skew the numbers. "Fast mode" also pins the
+  // lite pool, but counts and can be contributed like any real read.
+  const readOpts = clean.sample
+    ? { models: SAMPLE_MODELS, noMetrics: true }
+    : clean.fast
+      ? { models: SAMPLE_MODELS }
+      : {};
 
   const t0 = Date.now();
   try {
@@ -935,6 +942,7 @@ async function handleRead(req, res) {
       punches: punches.length,
       attempts,
       sample: clean.sample,
+      fast: clean.fast,
       contributed: !!contribId,
       client: clean.clientId,
       flags: suspectFlags(punches, finish).flags.join(",") || null,
@@ -956,6 +964,7 @@ async function handleRead(req, res) {
       ms,
       punches: 0,
       sample: clean.sample,
+      fast: clean.fast,
       contributed: false,
       client: clean.clientId,
       error: e.message || String(e),

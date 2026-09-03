@@ -250,6 +250,7 @@ async function readCardImage(dataURL, onStep = () => {}, opts = {}) {
         clientId: clientId(),
         sample: !!opts.sample,
         contribute: !opts.sample && !!opts.contribute,
+        fast: !opts.sample && !!opts.fast,
       }),
       signal: AbortSignal.timeout(55000),
     });
@@ -338,6 +339,8 @@ export function TimeCard() {
   const [torchState, setTorchState] = useState({ supported: false, on: false });
   const [privacy, setPrivacy] = useState(false);
   const [contribute, setContribute] = useState(true);
+  const [fast, setFast] = useState(false);
+  const [fastInfo, setFastInfo] = useState(false);
   const [lowLight, setLowLight] = useState(false);
   const [pending, setPending] = useState(null); // { src, from } awaiting "use / retake"
 
@@ -367,6 +370,13 @@ export function TimeCard() {
     setContribute((v) => {
       const n = !v;
       storage.set("punchcard:contribute", n ? "1" : "0");
+      return n;
+    });
+  }
+  function toggleFast() {
+    setFast((v) => {
+      const n = !v;
+      storage.set("punchcard:fast", n ? "1" : "0");
       return n;
     });
   }
@@ -403,6 +413,10 @@ export function TimeCard() {
         const c = await storage.get("punchcard:contribute");
         if (c && c.value === "0") setContribute(false);
       } catch (e) { /* default on */ }
+      try {
+        const f = await storage.get("punchcard:fast");
+        if (f && f.value === "1") setFast(true);
+      } catch (e) { /* default off */ }
     })();
   }, []);
 
@@ -801,6 +815,7 @@ export function TimeCard() {
     try {
       const { punches: found, contribId } = await readCardImage(s.src, setReadMsg, {
         contribute: !opts.sample && contribute,
+        fast: !opts.sample && fast,
         ...opts,
       });
       const merged = layout([...punches, ...found]);
@@ -1153,6 +1168,14 @@ export function TimeCard() {
           <input type="checkbox" checked=${contribute} onChange=${toggleContribute} />
           <span>Share my card photos to improve the reader.</span>
         </label>
+        <label class="contrib">
+          <input type="checkbox" checked=${fast} onChange=${toggleFast} />
+          <span>
+            Fast mode.${" "}
+            <button type="button" class="linklike" onClick=${() => setFastInfo((v) => !v)}>[What's this?]</button>
+          </span>
+        </label>
+        ${fastInfo && html`<p class="fasthelp">Uses a less accurate, but faster model.</p>`}
         <p class="footlink">
           <a href="/stats">Usage stats</a>
           <span aria-hidden="true"> · </span>

@@ -206,6 +206,15 @@ body {
   margin-top: 1px;
   accent-color: var(--color-accent);
 }
+.contrib .linklike { color: var(--color-accent-700); white-space: nowrap; }
+.fasthelp {
+  margin: 4px 0 0 25px;
+  font-size: 11px;
+  line-height: 1.6;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--color-neutral-500);
+}
 
 .err {
   border: 2px solid var(--color-accent);

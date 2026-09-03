@@ -248,6 +248,7 @@ test("validateReadBody accepts image + mimeType", () => {
     clientId: null,
     sample: false,
     contribute: false,
+    fast: false,
   });
 });
 
@@ -258,13 +259,14 @@ test("validateReadBody defaults the mimeType to image/jpeg", () => {
     clientId: null,
     sample: false,
     contribute: false,
+    fast: false,
   });
 });
 
 test("validateReadBody unwraps a data: URL and keeps clientId + sample", () => {
   assert.deepEqual(
     validateReadBody({ image: "data:image/webp;base64,QUJD", clientId: "abc", sample: true }),
-    { image: "QUJD", mimeType: "image/webp", clientId: "abc", sample: true, contribute: false }
+    { image: "QUJD", mimeType: "image/webp", clientId: "abc", sample: true, contribute: false, fast: false }
   );
 });
 
@@ -276,6 +278,12 @@ test("validateReadBody honours contribute:true, but never for the sample card", 
     validateReadBody({ image: "QUJD", contribute: true, sample: true }).contribute,
     false
   );
+});
+
+test("validateReadBody honours fast:true, but never for the sample card", () => {
+  assert.equal(validateReadBody({ image: "QUJD", fast: true }).fast, true);
+  assert.equal(validateReadBody({ image: "QUJD" }).fast, false);
+  assert.equal(validateReadBody({ image: "QUJD", fast: true, sample: true }).fast, false);
 });
 
 test("validateReadBody rejects a missing or non-string image", () => {
