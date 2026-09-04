@@ -6,7 +6,7 @@
 /* framing / focus thresholds for the on-screen scan guide, exported so they
    can be tuned in one place */
 export const SCAN = {
-  MIN_FILL: 0.3, // card must cover at least this fraction of the frame
+  MIN_FILL: 0.26, // card must cover at least this fraction of the frame (detectCard's corners run ~10% inset of the true edge, by design)
   MAX_FILL: 0.92, // ...and not completely fill it (need a margin to find edges)
   STABLE_FRAMES: 8, // steady this many frames -> the outline turns green
   MOVE_TOL: 0.02, // max corner drift (fraction of frame diagonal) to count as steady
@@ -43,15 +43,36 @@ export function otsu(hist, total) {
   return Math.round((lo + hi) / 2); // middle of the max-variance plateau
 }
 
+/* One pass of 4-neighbour erosion on a binary mask - shrinks the bright
+   region by a pixel and, more importantly, snaps off any thin filament
+   bridging it to an unrelated bright blob (a glare streak reaching toward a
+   window or overhead light, say) before the flood fill can merge the two. */
+function erode(mask, w, h) {
+  const out = new Uint8Array(w * h);
+  for (let y = 1; y < h - 1; y++) {
+    const row = y * w;
+    for (let x = 1; x < w - 1; x++) {
+      const i = row + x;
+      out[i] = mask[i] & mask[i - 1] & mask[i + 1] & mask[i - w] & mask[i + w];
+    }
+  }
+  return out;
+}
+
 /* Largest bright connected component. `gray` is length w*h, 0..255.
    Returns { pixels:Int32Array of indices, area, bbox:[x0,y0,x1,y1] } or null. */
 function brightBlob(gray, w, h) {
   const total = w * h;
   const hist = new Uint32Array(256);
-  for (let i = 0; i < total; i++) hist[gray[i]]++;
+  // fold blown-out glare highlights into the top card bin before running
+  // Otsu, so a hot spot doesn't read as its own bright class and pull the
+  // threshold up past legitimately-lit card paper (which would fragment it)
+  const GLARE_CLIP = 235;
+  for (let i = 0; i < total; i++) hist[gray[i] < GLARE_CLIP ? gray[i] : GLARE_CLIP]++;
   const thr = Math.max(otsu(hist, total), 70);
-  const mask = new Uint8Array(total);
+  let mask = new Uint8Array(total);
   for (let i = 0; i < total; i++) mask[i] = gray[i] > thr ? 1 : 0;
+  mask = erode(erode(mask, w, h), w, h);
 
   const seen = new Uint8Array(total);
   const stack = new Int32Array(total);
@@ -102,6 +123,57 @@ export function orderQuad(pts) {
   return [tl, tr, br, bl];
 }
 
+/* The k points of `points` with the highest score(p), kept via a small
+   bounded insertion so a single pass costs O(n) amortised rather than a
+   full O(n log n) sort of the whole blob. */
+function topKBy(points, score, k) {
+  const top = []; // ascending by score, length capped at k
+  for (const p of points) {
+    const s = score(p);
+    if (top.length < k) {
+      let i = top.length;
+      top.push({ p, s });
+      while (i > 0 && top[i - 1].s > top[i].s) {
+        const t = top[i - 1];
+        top[i - 1] = top[i];
+        top[i] = t;
+        i--;
+      }
+    } else if (s > top[0].s) {
+      top[0] = { p, s };
+      let i = 0;
+      while (i < top.length - 1 && top[i].s > top[i + 1].s) {
+        const t = top[i];
+        top[i] = top[i + 1];
+        top[i + 1] = t;
+        i++;
+      }
+    }
+  }
+  return top;
+}
+
+/* A corner estimate that isn't just the single most extreme pixel: the
+   centroid of the top slice of points by `score`. A true corner is a whole
+   region, so it dominates that slice; a stray glare speck a little further
+   out only pulls the average a little instead of hijacking the corner
+   outright. The slice size is capped rather than scaled with the point
+   count - it only needs to be wide enough to outvote a small glare cluster,
+   and growing it with a big card blob would just inset the corner more
+   without buying any extra robustness. */
+export function robustCorner(points, score, frac = 0.002, minN = 12, maxN = 30) {
+  if (!points.length) return null;
+  const k = Math.min(points.length, Math.min(maxN, Math.max(minN, Math.round(points.length * frac))));
+  const top = topKBy(points, score, k);
+  let sx = 0;
+  let sy = 0;
+  for (const { p } of top) {
+    sx += p.x;
+    sy += p.y;
+  }
+  return { x: sx / top.length, y: sy / top.length };
+}
+
 export function quadArea(q) {
   let a = 0;
   for (let i = 0; i < q.length; i++) {
@@ -128,17 +200,32 @@ export function quadDrift(a, b, w, h) {
 export function detectCard(gray, w, h) {
   const blob = brightBlob(gray, w, h);
   if (!blob) return null;
-  const fill = blob.area / (w * h);
-  if (fill < 0.12 || fill > 0.985) return null;
+  // two erosion passes shave a ~2px border off whatever the mask covers, so
+  // compare against the area that's still reachable after that rather than
+  // the raw frame - otherwise a frame that's bright edge-to-edge no longer
+  // reads as "fills everything" once eroded, and slips past this check
+  const reachable = Math.max(1, (w - 4) * (h - 4));
+  const fill = blob.area / reachable;
+  if (fill < 0.12 || fill > 0.97) return null;
 
-  const corners = orderQuad(blob.pixels.map((p) => ({ x: p % w, y: Math.floor(p / w) })));
+  const points = blob.pixels.map((p) => ({ x: p % w, y: Math.floor(p / w) }));
+  // each corner is the centroid of a small extreme slice, not the single
+  // most extreme pixel - a real corner is a whole region and dominates that
+  // slice, while a stray glare speck only nudges the average
+  const corners = [
+    robustCorner(points, (p) => -(p.x + p.y)), // tl
+    robustCorner(points, (p) => p.x - p.y), // tr
+    robustCorner(points, (p) => p.x + p.y), // br
+    robustCorner(points, (p) => -(p.x - p.y)), // bl
+  ];
   const [tl, tr, br, bl] = corners;
   const sides = [dist(tl, tr), dist(tr, br), dist(br, bl), dist(bl, tl)];
   if (Math.min(...sides) < 0.15 * Math.min(w, h)) return null;
 
-  // the quad should account for most of the blob it came from (rejects Ls, blobs)
+  // the quad should account for most of the blob it came from (rejects Ls, blobs);
+  // a little looser on the low side since averaging insets the corners a touch
   const qa = quadArea(corners);
-  if (qa < 0.6 * blob.area || qa > 1.6 * blob.area) return null;
+  if (qa < 0.5 * blob.area || qa > 1.6 * blob.area) return null;
   return corners;
 }
 

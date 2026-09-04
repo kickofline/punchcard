@@ -992,20 +992,6 @@ export function TimeCard() {
       <div class="wrap">
         <div class="stats">
           <button
-            class="stat"
-            onClick=${() => last && copyAndLog(hrs(last.minutes), "last")}
-            disabled=${!last}
-          >
-            <span class="tag">Last shift</span>
-            <span class="figure">${last ? hrs(last.minutes) : "—"}</span>
-            <span class="sub">
-              ${last
-                ? `${clock12(last.in)}–${clock12(last.out)} · ${last.minutes} min`
-                : "No completed shift"}
-            </span>
-            <span class="cue">${copied === "last" ? "Copied · opening OBU" : last ? "Tap: copy + open OBU" : ""}</span>
-          </button>
-          <button
             class="stat today"
             onClick=${() => todayMinutes > 0 && copyAndLog(hrs(todayMinutes), "today")}
             disabled=${!todayMinutes}
@@ -1020,6 +1006,20 @@ export function TimeCard() {
                 : "No shifts today"}
             </span>
             <span class="cue">${copied === "today" ? "Copied · opening OBU" : todayMinutes ? "Tap: copy + open OBU" : ""}</span>
+          </button>
+          <button
+            class="stat"
+            onClick=${() => last && copyAndLog(hrs(last.minutes), "last")}
+            disabled=${!last}
+          >
+            <span class="tag">Last shift</span>
+            <span class="figure">${last ? hrs(last.minutes) : "—"}</span>
+            <span class="sub">
+              ${last
+                ? `${clock12(last.in)}–${clock12(last.out)} · ${last.minutes} min`
+                : "No completed shift"}
+            </span>
+            <span class="cue">${copied === "last" ? "Copied · opening OBU" : last ? "Tap: copy + open OBU" : ""}</span>
           </button>
         </div>
 
