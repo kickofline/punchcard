@@ -396,10 +396,10 @@ export function TimeCard() {
 
   useEffect(() => {
     (async () => {
-      // The card itself is the record and gets overwritten every shift, so
-      // this app doesn't keep one either - each scan starts clean. Clear out
-      // anything a pre-update install left behind.
-      storage.delete("timecard:v1");
+      try {
+        const saved = await storage.get("timecard:v1");
+        if (saved) setPunches(JSON.parse(saved.value).punches || []);
+      } catch (e) { /* nothing saved yet */ }
       try {
         const dismissed = await storage.get("punchcard:install-dismissed");
         if (!dismissed && !IS_STANDALONE) setInstallHidden(false);
@@ -431,6 +431,11 @@ export function TimeCard() {
       window.removeEventListener("appinstalled", onInstalled);
     };
   }, []);
+
+  useEffect(() => {
+    if (!punches.length) return;
+    storage.set("timecard:v1", JSON.stringify({ punches }));
+  }, [punches]);
 
   useEffect(() => {
     punchesRef.current = punches;
@@ -874,6 +879,7 @@ export function TimeCard() {
   function clearCard() {
     setPunches([]);
     setEditing(null);
+    storage.delete("timecard:v1");
   }
   function copyDay(d) {
     const lines = d.list.map((s) => `${clock12(s.in)} to ${clock12(s.out)} = ${hrs(s.minutes)} h (${s.minutes} min)`);
