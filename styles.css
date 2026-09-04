@@ -162,7 +162,6 @@ body {
   border-left: var(--ink);
   margin-bottom: 16px;
 }
-.stats.solo { grid-template-columns: 1fr; }
 .stat {
   text-align: left;
   border-right: var(--ink);

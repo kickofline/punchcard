@@ -533,6 +533,7 @@ export function TimeCard() {
   const runningMs = open ? Date.now() - localMs(open.in) : 0;
 
   const today = todayISO();
+  const openTodayMs = open && open.in.date === today ? runningMs : 0;
   const byDay = useMemo(() => {
     const m = new Map();
     for (const s of shifts) {
@@ -548,6 +549,11 @@ export function TimeCard() {
     }));
   }, [shifts]);
   const todayRow = byDay.find((d) => d.date === today);
+  // today's total, ticking live while a shift punched in today is still open
+  const todayMinutes = (todayRow ? todayRow.minutes : 0) + Math.floor(openTodayMs / 60000);
+
+  const done = shifts.filter((s) => s.out && !s.bad);
+  const last = done[done.length - 1];
 
   /* Rows to show: every slot that holds a punch, plus a slot being edited. */
   const rows = grid
@@ -984,14 +990,28 @@ export function TimeCard() {
       `}
 
       <div class="wrap">
-        <div class="stats solo">
+        <div class="stats">
+          <button
+            class="stat"
+            onClick=${() => last && copyAndLog(hrs(last.minutes), "last")}
+            disabled=${!last}
+          >
+            <span class="tag">Last shift</span>
+            <span class="figure">${last ? hrs(last.minutes) : "—"}</span>
+            <span class="sub">
+              ${last
+                ? `${clock12(last.in)}–${clock12(last.out)} · ${last.minutes} min`
+                : "No completed shift"}
+            </span>
+            <span class="cue">${copied === "last" ? "Copied · opening OBU" : last ? "Tap: copy + open OBU" : ""}</span>
+          </button>
           <button
             class="stat today"
-            onClick=${() => todayRow && copyAndLog(hrs(todayRow.minutes), "today")}
-            disabled=${!todayRow}
+            onClick=${() => todayMinutes > 0 && copyAndLog(hrs(todayMinutes), "today")}
+            disabled=${!todayMinutes}
           >
             <span class="tag">Today</span>
-            <span class="figure">${todayRow ? hrs(todayRow.minutes) : "0.00"}</span>
+            <span class="figure">${todayMinutes ? hrs(todayMinutes) : "0.00"}</span>
             <span class="sub">
               ${open
                 ? html`<span class="running">Running ${hms(runningMs)}</span>`
@@ -999,7 +1019,7 @@ export function TimeCard() {
                 ? `${todayRow.list.length} shift${todayRow.list.length === 1 ? "" : "s"} · ${todayRow.minutes} min`
                 : "No shifts today"}
             </span>
-            <span class="cue">${copied === "today" ? "Copied · opening OBU" : todayRow ? "Tap: copy + open OBU" : ""}</span>
+            <span class="cue">${copied === "today" ? "Copied · opening OBU" : todayMinutes ? "Tap: copy + open OBU" : ""}</span>
           </button>
         </div>
 
