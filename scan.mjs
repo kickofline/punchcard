@@ -1,7 +1,8 @@
 /* Pure geometry + frame analysis for the live camera scanner.
-   No DOM here - the browser code in app.mjs feeds in a small grayscale
-   frame and draws whatever this returns. Kept dependency-free and unit
-   tested (test/scan.test.mjs). */
+   No DOM here - the browser code in app.mjs feeds in a small frame (run
+   through paperChannel() below rather than plain grayscale, so a colored
+   reflection doesn't read as card) and draws whatever this returns. Kept
+   dependency-free and unit tested (test/scan.test.mjs). */
 
 /* framing / focus thresholds for the on-screen scan guide, exported so they
    can be tuned in one place */
@@ -14,6 +15,24 @@ export const SCAN = {
   SHARP_REL: 0.55, // ...or this fraction of the sharpest frame seen so far
   MAX_WAIT_FRAMES: 22, // stop nagging "Focusing" after this many steady frames
 };
+
+/* Score a pixel by how much it looks like manila card paper rather than a
+   colored reflection, on the same 0..255 scale as plain luminance so it
+   drops straight into detectCard/sharpness in place of it. A shiny desk
+   throwing back a tinted reflection (the common glare case: a maroon,
+   wood-grain, or otherwise non-neutral surface) is often just as bright as
+   the card, but noticeably more saturated - the card and a true white hot
+   spot on it both stay close to neutral even when overexposed. Saturated
+   pixels get a hard brightness penalty; a specular highlight bleached
+   toward white is unaffected either way. */
+export function paperChannel(r, g, b) {
+  const maxc = Math.max(r, g, b);
+  const minc = Math.min(r, g, b);
+  const sat = maxc ? (maxc - minc) / maxc : 0;
+  const luma = (r * 77 + g * 150 + b * 29) >> 8;
+  const penalty = Math.min(1, sat / 0.45);
+  return Math.max(0, Math.round(luma * (1 - 0.85 * penalty)));
+}
 
 /* Otsu threshold from a 256-bin histogram. */
 export function otsu(hist, total) {

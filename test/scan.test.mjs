@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   otsu,
+  paperChannel,
   orderQuad,
   quadArea,
   quadDrift,
@@ -123,6 +124,49 @@ test("detectCard is not derailed by a glare speck bridged to the card by a thin 
   // the key assertion: tr didn't get dragged out to the glare blob past x=100
   assert.ok(tr.x <= 100 + CORNER_TOL, `tr.x=${tr.x} should stay near the card, not the glare`);
   assert.ok(Math.abs(br.x - 99) <= CORNER_TOL && Math.abs(br.y - 129) <= CORNER_TOL);
+});
+
+/* ------------------------------ paperChannel ------------------------ */
+
+test("paperChannel keeps a neutral bright pixel close to its luminance", () => {
+  const manila = paperChannel(230, 210, 170); // low-saturation card paper
+  const white = paperChannel(250, 248, 240); // glare bleached toward white
+  assert.ok(manila > 90, `manila paper should stay reasonably bright, got ${manila}`);
+  assert.ok(white > 200, `a near-white hot spot should barely be discounted, got ${white}`);
+});
+
+test("paperChannel discounts a saturated reflection even when it's bright", () => {
+  const deskGlare = paperChannel(200, 90, 110); // a shiny maroon desk's reflection
+  const manila = paperChannel(230, 210, 170);
+  assert.ok(
+    deskGlare < manila / 3,
+    `a colored reflection should read much darker than paper, got ${deskGlare} vs ${manila}`
+  );
+});
+
+test("detectCard, fed paperChannel instead of plain luminance, isn't fooled by a broad saturated reflection touching the card with no thin bridge", () => {
+  const w = 140;
+  const h = 180;
+  // the raw scene: dark background, a card, and a big glossy maroon desk
+  // reflection sitting directly against the card's right edge - no
+  // bottleneck for erosion alone to sever, unlike the filament test above
+  const bg = [30, 28, 26];
+  const card = [230, 210, 170];
+  const deskGlare = [200, 90, 110];
+  const g = new Uint8ClampedArray(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let rgb = bg;
+      if (x >= 20 && x < 80 && y >= 20 && y < 160) rgb = card;
+      else if (x >= 80 && x < 140 && y >= 10 && y < 170) rgb = deskGlare;
+      g[y * w + x] = paperChannel(rgb[0], rgb[1], rgb[2]);
+    }
+  }
+  const q = detectCard(g, w, h);
+  assert.ok(q, "expected a quad");
+  const [tl, tr] = q;
+  assert.ok(Math.abs(tl.x - 20) <= CORNER_TOL);
+  assert.ok(tr.x <= 80 + CORNER_TOL, `tr.x=${tr.x} should stay near the card's true edge (80), not the desk glare`);
 });
 
 /* ------------------------------ robustCorner ------------------------ */

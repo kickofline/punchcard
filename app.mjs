@@ -23,6 +23,7 @@ import {
 } from "./lib.mjs";
 import {
   SCAN,
+  paperChannel,
   detectCard,
   quadArea,
   quadDrift,
@@ -699,12 +700,15 @@ export function TimeCard() {
         return;
       }
       const d = img.data;
+      // "gray" is really a paper-likeness channel: close to plain luminance
+      // for neutral pixels (the card, or glare bleached toward white), but
+      // discounted hard for a saturated one (a colored reflection off the
+      // desk) so it doesn't get flood-filled in as part of the card.
       const gray = new Uint8ClampedArray(bw * bh);
       let lsum = 0;
       for (let i = 0, j = 0; i < d.length; i += 4, j++) {
-        const g = (d[i] * 77 + d[i + 1] * 150 + d[i + 2] * 29) >> 8;
-        gray[j] = g;
-        lsum += g;
+        gray[j] = paperChannel(d[i], d[i + 1], d[i + 2]);
+        lsum += (d[i] * 77 + d[i + 1] * 150 + d[i + 2] * 29) >> 8; // raw luma for the low-light check
       }
       // dim scene for a while -> suggest the torch (only if it's available)
       st.dark = lsum / gray.length < 60 ? (st.dark || 0) + 1 : 0;
