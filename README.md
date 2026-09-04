@@ -50,18 +50,21 @@ node --test
 | Env var | Default | Notes |
 | --- | --- | --- |
 | `GEMINI_API_KEY` | — | required for `/api/read` |
-| `GEMINI_MODEL` | `gemini-flash-latest,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-flash-lite-latest` | comma list, newest first; the next model is tried when the one before is out of quota, overloaded, missing, or slow |
-| `GEMINI_TIMEOUT_MS` | `9000` | per-model deadline; a model that hasn't answered by then is abandoned for the next one |
+| `GEMINI_MODEL` | `gemini-3.5-flash-lite,gemini-flash-lite-latest,gemini-3.5-flash,gemini-3.6-flash,gemini-3.7-flash,gemini-flash-latest` | comma list; the next model is tried when the one before is out of quota, overloaded, missing, or slow |
+| `GEMINI_TIMEOUT_MS` | `15000` | per-model deadline; a model that hasn't answered by then is abandoned for the next one |
 | `STATS_FILE` | `./.stats.json` | where `/stats` metrics persist; point at a mounted volume to survive redeploys |
 | `CONTRIB_DIR` | `contrib` next to `STATS_FILE` | where opted-in card photos + reader output are kept for quality review; set empty to disable |
 | `CONTRIB_MAX` | `3000` | cap on stored samples; oldest deleted first |
 | `PORT` | `3000` | Coolify sets this automatically |
 | `HOST` | `0.0.0.0` | binds all interfaces (reachable from other devices on the LAN); set `127.0.0.1` for local-only |
 
-The default walks newest to oldest through the Flash family. The stronger
-models read dot-matrix stamps best but have a ~20 req/day free cap; the `-lite`
-models are weaker but allow 500/day, so they backstop the list. Each model gets
-one `GEMINI_TIMEOUT_MS` window before the server moves on.
+The default leads with the `-lite` models: `/stats` on the live app showed
+them both faster (p50 ~1.4s vs. the heavier models timing out at the full
+`GEMINI_TIMEOUT_MS` window with a 0% quota-error rate — they just weren't
+answering in time) and more reliable, so they front the cascade now. The
+full-size Flash models still follow as a fallback in case a lite model is
+down or a card needs the extra strength. Each model gets one
+`GEMINI_TIMEOUT_MS` window before the server moves on.
 
 ## Deploy (Coolify)
 

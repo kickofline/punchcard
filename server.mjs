@@ -4,9 +4,11 @@
    Env:
      GEMINI_API_KEY     required for /api/read
      GEMINI_MODEL       comma list, tried in order when one is busy / out of
-                        quota / missing / slow. Default is a newest-to-oldest
-                        cascade of flash models.
-     GEMINI_TIMEOUT_MS  per-model deadline before giving up on it (default 9000)
+                        quota / missing / slow. Default leads with the lite
+                        models, which /stats has shown to be both faster and
+                        more reliable right now, then climbs to the heavier
+                        flash models as a fallback.
+     GEMINI_TIMEOUT_MS  per-model deadline before giving up on it (default 15000)
      STATS_FILE         where usage metrics persist (default ./.stats.json)
      CONTRIB_DIR        where opted-in card photos + reader output are kept for
                         quality review (default: a "contrib" dir next to
@@ -38,7 +40,7 @@ import { layout, readCard } from "./lib.mjs";
 const ROOT = fileURLToPath(new URL(".", import.meta.url));
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || "0.0.0.0"; // all interfaces; set HOST=127.0.0.1 to keep it local
-const CALL_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS || 9000);
+const CALL_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS || 15000);
 const STATS_FILE = process.env.STATS_FILE || join(ROOT, ".stats.json");
 const CONTRIB_DIR =
   process.env.CONTRIB_DIR ?? join(dirname(STATS_FILE), "contrib");
@@ -48,12 +50,12 @@ const API_KEY = process.env.GEMINI_API_KEY || "";
 const MODELS = (
   process.env.GEMINI_MODEL ||
   [
-    "gemini-flash-latest",
-    "gemini-3.7-flash",
-    "gemini-3.6-flash",
-    "gemini-3.5-flash",
     "gemini-3.5-flash-lite",
     "gemini-flash-lite-latest",
+    "gemini-3.5-flash",
+    "gemini-3.6-flash",
+    "gemini-3.7-flash",
+    "gemini-flash-latest",
   ].join(",")
 )
   .split(",")
