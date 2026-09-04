@@ -322,7 +322,6 @@ async function readCardImage(dataURL, onStep = () => {}, opts = {}) {
 
 export function TimeCard() {
   const [punches, setPunches] = useState([]);
-  const [other, setOther] = useState("");
   const [editing, setEditing] = useState(null);
   const [draft, setDraft] = useState({ date: todayISO(), time: nowHM() });
   const [status, setStatus] = useState("idle"); // idle | camera | reading
@@ -397,14 +396,10 @@ export function TimeCard() {
 
   useEffect(() => {
     (async () => {
-      try {
-        const saved = await storage.get("timecard:v1");
-        if (saved) {
-          const v = JSON.parse(saved.value);
-          setPunches(v.punches || []);
-          setOther(v.other || "");
-        }
-      } catch (e) { /* nothing saved yet */ }
+      // The card itself is the record and gets overwritten every shift, so
+      // this app doesn't keep one either - each scan starts clean. Clear out
+      // anything a pre-update install left behind.
+      storage.delete("timecard:v1");
       try {
         const dismissed = await storage.get("punchcard:install-dismissed");
         if (!dismissed && !IS_STANDALONE) setInstallHidden(false);
@@ -436,11 +431,6 @@ export function TimeCard() {
       window.removeEventListener("appinstalled", onInstalled);
     };
   }, []);
-
-  useEffect(() => {
-    if (!punches.length && !other) return;
-    storage.set("timecard:v1", JSON.stringify({ punches, other }));
-  }, [punches, other]);
 
   useEffect(() => {
     punchesRef.current = punches;
@@ -526,8 +516,6 @@ export function TimeCard() {
   const { shifts, notes } = useMemo(() => readCard(grid), [grid]);
 
   const cardMinutes = shifts.reduce((s, x) => s + x.minutes, 0);
-  const otherMinutes = Math.max(0, parseInt(other, 10) || 0);
-  const totalMinutes = cardMinutes + otherMinutes;
   const open = shifts.find((s) => s.open);
 
   useEffect(() => {
@@ -555,9 +543,6 @@ export function TimeCard() {
     }));
   }, [shifts]);
   const todayRow = byDay.find((d) => d.date === today);
-
-  const done = shifts.filter((s) => s.out && !s.bad);
-  const last = done[done.length - 1];
 
   /* Rows to show: every slot that holds a punch, plus a slot being edited. */
   const rows = grid
@@ -818,12 +803,13 @@ export function TimeCard() {
         fast: !opts.sample && fast,
         ...opts,
       });
-      const merged = layout([...punches, ...found]);
-      const keys = new Set(found.map((p) => `${p.type}|${p.date}|${p.time}`));
+      // The photo is what's on the card right now, so a scan replaces the
+      // current card rather than piling onto whatever was read before.
+      const merged = layout(found);
       const freshSlots = [];
       const baseline = {};
       merged.forEach((p, i) => {
-        if (p && keys.has(`${p.type}|${p.date}|${p.time}`)) {
+        if (p) {
           freshSlots.push(i);
           baseline[i] = { type: p.type, date: p.date, time: p.time };
         }
@@ -887,9 +873,7 @@ export function TimeCard() {
   }
   function clearCard() {
     setPunches([]);
-    setOther("");
     setEditing(null);
-    storage.delete("timecard:v1");
   }
   function copyDay(d) {
     const lines = d.list.map((s) => `${clock12(s.in)} to ${clock12(s.out)} = ${hrs(s.minutes)} h (${s.minutes} min)`);
@@ -994,21 +978,7 @@ export function TimeCard() {
       `}
 
       <div class="wrap">
-        <div class="stats">
-          <button
-            class="stat"
-            onClick=${() => last && copyAndLog(hrs(last.minutes), "last")}
-            disabled=${!last}
-          >
-            <span class="tag">Last shift</span>
-            <span class="figure">${last ? hrs(last.minutes) : "—"}</span>
-            <span class="sub">
-              ${last
-                ? `${clock12(last.in)}–${clock12(last.out)} · ${last.minutes} min`
-                : "No completed shift"}
-            </span>
-            <span class="cue">${copied === "last" ? "Copied · opening OBU" : last ? "Tap: copy + open OBU" : ""}</span>
-          </button>
+        <div class="stats solo">
           <button
             class="stat today"
             onClick=${() => todayRow && copyAndLog(hrs(todayRow.minutes), "today")}
@@ -1097,18 +1067,9 @@ export function TimeCard() {
               <span class="lbl">This card</span>
               <span class="num">${cardMinutes || 0} min</span>
             </div>
-            <div class="tline">
-              <span class="lbl">Other cards</span>
-              <input class="num" inputMode="numeric" value=${other} aria-label="Minutes from other cards"
-                onInput=${(e) => setOther(e.target.value.replace(/[^0-9]/g, ""))} />
-            </div>
-            <div class="tline">
-              <span class="lbl">Total minutes</span>
-              <span class="num">${totalMinutes || 0} min</span>
-            </div>
             <div class="tline big">
               <span class="lbl">Hours</span>
-              <span class="num">${totalMinutes ? hrs(totalMinutes) : "0.00"}</span>
+              <span class="num">${cardMinutes ? hrs(cardMinutes) : "0.00"}</span>
             </div>
           </div>
         </div>
@@ -1155,7 +1116,7 @@ export function TimeCard() {
             <p class="note">Open shift since ${clock12(open.in)}. It won't count until there's a matching OUT.</p>
           `}
           ${notes.map((n, i) => html`<p class="note" key=${i}>${n}</p>`)}
-          ${(punches.length > 0 || other) && html`
+          ${punches.length > 0 && html`
             <button class="btn btn-secondary reset" onClick=${clearCard}>Clear card</button>
           `}
         </div>
