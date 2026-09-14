@@ -1,5 +1,5 @@
 /* punchcard server: serves the static app and proxies card photos to a
-   self-hosted Gemma 4 vision model (via LiteLLM) so the API key never
+   self-hosted vision model (via LiteLLM) so the API key never
    reaches the browser.
 
    Env:
@@ -7,7 +7,7 @@
                         e.g. http://10.1.0.155:4000/v1 (reach it over the
                         WireGuard sidecar when not on the same LAN)
      LITELLM_API_KEY    required for /api/read
-     LITELLM_MODEL      model name as configured in LiteLLM (default gemma4-e4b)
+     LITELLM_MODEL      model name as configured in LiteLLM (default qwen3-vl-8b)
      LITELLM_TIMEOUT_MS per-attempt deadline before giving up (default 30000)
      LITELLM_RETRIES    attempts against the model before failing (default 2)
      STATS_FILE         where usage metrics persist (default ./.stats.json)
@@ -49,7 +49,7 @@ const CONTRIB_MAX = Number(process.env.CONTRIB_MAX || 3000);
 const CONTRIB_TOKEN = process.env.CONTRIB_TOKEN || ""; // gate /contrib; blank = loopback only
 const LITELLM_BASE_URL = (process.env.LITELLM_BASE_URL || "http://litellm:4000/v1").replace(/\/+$/, "");
 const API_KEY = process.env.LITELLM_API_KEY || "";
-const MODEL = process.env.LITELLM_MODEL || "gemma4-e4b";
+const MODEL = process.env.LITELLM_MODEL || "qwen3-vl-8b";
 const RETRY_ATTEMPTS = Number(process.env.LITELLM_RETRIES || 2);
 const MAX_BODY = 8 * 1024 * 1024;
 

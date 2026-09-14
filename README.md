@@ -18,7 +18,7 @@ a misread is a quick fix.
   Also unit-tested.
 - **`server.mjs`** — a zero-dependency Node server that serves the static app
   **and** exposes `POST /api/read`, which relays the photo to a self-hosted
-  Gemma 4 vision model behind a LiteLLM proxy. The API key lives only on the
+  vision model behind a LiteLLM proxy. The API key lives only on the
   server, never in the browser.
   Also serves `GET /healthz` and `GET /stats` (JSON, or `?html=1` for a page)
   with usage metrics — read counts, rolling error rate, per-model
@@ -39,7 +39,7 @@ node --env-file=.env server.mjs
 ```
 
 `LITELLM_BASE_URL` needs to reach a LiteLLM proxy routing to a vision-capable
-model (`gemma4-e4b` by default). The app image brings up its own kernel
+model (`qwen3-vl-8b` by default). The app image brings up its own kernel
 WireGuard tunnel at startup (see `wg/README.md`) so it can reach the LiteLLM
 host over the VPN regardless of where Coolify places the container.
 
@@ -55,7 +55,7 @@ node --test
 | --- | --- | --- |
 | `LITELLM_BASE_URL` | `http://10.1.0.155:4000/v1` | required for `/api/read`; LiteLLM's OpenAI-compatible base URL |
 | `LITELLM_API_KEY` | — | required for `/api/read` |
-| `LITELLM_MODEL` | `gemma4-e4b` | model name as configured in LiteLLM |
+| `LITELLM_MODEL` | `qwen3-vl-8b` | model name as configured in LiteLLM |
 | `LITELLM_TIMEOUT_MS` | `30000` | per-attempt deadline before giving up |
 | `LITELLM_RETRIES` | `2` | attempts against the model before failing |
 | `STATS_FILE` | `./.stats.json` | where `/stats` metrics persist; point at a mounted volume to survive redeploys |
