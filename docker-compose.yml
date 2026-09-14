@@ -14,8 +14,6 @@ services:
     env_file: .env
     volumes:
       - /lib/modules:/lib/modules:ro
-    ports:
-      - "3000:3000"
     restart: unless-stopped
 
   app:
