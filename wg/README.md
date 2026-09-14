@@ -24,6 +24,16 @@ whole thing is settable as Coolify secrets with no config file to upload
 (the script itself is static and lives in the repo; only its inputs are
 secret).
 
+`wg/Dockerfile` bakes that script into a small image built on top of
+`lscr.io/linuxserver/wireguard` (`docker-compose.yml`'s `wg` service uses
+`build: ./wg`, not a bare `image:` + bind mount). A bind mount was tried
+first, but Coolify's compose deploy doesn't check out the full repo into the
+directory it runs `docker compose up` from — only the compose file itself —
+so a relative bind-mount source like `./wg/init-wg-conf.sh` silently became
+an empty directory instead of erroring. Building the script in goes through
+the same git-clone-based build path that already works correctly for `app`'s
+own Dockerfile.
+
 ## Getting a peer config
 
 On skynet, a new peer is added directly to `/etc/wireguard/wg0.conf`

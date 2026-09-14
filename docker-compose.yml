@@ -1,6 +1,6 @@
 services:
   wg:
-    image: lscr.io/linuxserver/wireguard:latest
+    build: ./wg
     container_name: punchcard-wg
     cap_add:
       - NET_ADMIN
@@ -13,7 +13,6 @@ services:
       - TZ=Etc/UTC
     env_file: .env
     volumes:
-      - ./wg/init-wg-conf.sh:/custom-cont-init.d/init-wg-conf.sh:ro
       - /lib/modules:/lib/modules:ro
     restart: unless-stopped
 
