@@ -39,10 +39,9 @@ node --env-file=.env server.mjs
 ```
 
 `LITELLM_BASE_URL` needs to reach a LiteLLM proxy routing to a vision-capable
-model (`gemma4-e4b` by default). `docker-compose.yml` runs a `wg` sidecar
-container (see `wg/README.md`) and joins `app` to its network namespace, so
-`app` reaches LiteLLM over the tunnel automatically when the LiteLLM host
-isn't on the same network.
+model (`gemma4-e4b` by default). The app image brings up its own kernel
+WireGuard tunnel at startup (see `wg/README.md`) so it can reach the LiteLLM
+host over the VPN regardless of where Coolify places the container.
 
 Run the tests:
 
@@ -72,11 +71,8 @@ failures (5xx / timeout) rather than falling through a model list.
 ## Deploy (Coolify)
 
 Deploy via `docker-compose.yml` — **the Coolify resource must use the Docker
-Compose build pack**, not Nixpacks/Dockerfile auto-detection, or the `wg`
-sidecar's `cap_add`/volumes are silently dropped and the tunnel never comes
-up. `wg` brings up a kernel WireGuard tunnel and `app` joins its network
-namespace, so it can reach the LiteLLM host over the VPN regardless of where
-Coolify places the container:
+Compose build pack**, not Nixpacks/Dockerfile auto-detection, or `app`'s
+`cap_add` is silently dropped and the tunnel never comes up:
 
 - Set `LITELLM_API_KEY` and the `WG_*` variables as environment variables
   (see `.env.example`) — `wg/README.md` covers getting a peer config.

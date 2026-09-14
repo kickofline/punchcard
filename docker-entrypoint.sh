@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
 : "${WG_PRIVATE_KEY:?WG_PRIVATE_KEY is required}"
@@ -8,8 +8,8 @@ set -euo pipefail
 : "${WG_ENDPOINT:?WG_ENDPOINT is required}"
 : "${WG_ALLOWED_IPS:?WG_ALLOWED_IPS is required}"
 
-mkdir -p /config/wg_confs
-cat > /config/wg_confs/wg0.conf <<EOF
+mkdir -p /etc/wireguard
+cat > /etc/wireguard/wg0.conf <<EOF
 [Interface]
 PrivateKey = ${WG_PRIVATE_KEY}
 Address = ${WG_ADDRESS}
@@ -22,4 +22,8 @@ Endpoint = ${WG_ENDPOINT}
 AllowedIPs = ${WG_ALLOWED_IPS}
 PersistentKeepalive = ${WG_KEEPALIVE:-25}
 EOF
-chmod 600 /config/wg_confs/wg0.conf
+chmod 600 /etc/wireguard/wg0.conf
+
+wg-quick up wg0
+
+exec "$@"
