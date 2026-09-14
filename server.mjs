@@ -1,14 +1,15 @@
-/* punchcard server: serves the static app and proxies card photos to the
-   Gemini vision API so the API key never reaches the browser.
+/* punchcard server: serves the static app and proxies card photos to a
+   self-hosted Gemma 4 vision model (via LiteLLM) so the API key never
+   reaches the browser.
 
    Env:
-     GEMINI_API_KEY     required for /api/read
-     GEMINI_MODEL       comma list, tried in order when one is busy / out of
-                        quota / missing / slow. Default leads with the lite
-                        models, which /stats has shown to be both faster and
-                        more reliable right now, then climbs to the heavier
-                        flash models as a fallback.
-     GEMINI_TIMEOUT_MS  per-model deadline before giving up on it (default 15000)
+     LITELLM_BASE_URL   base URL of the LiteLLM proxy's OpenAI-compatible API,
+                        e.g. http://10.1.0.155:4000/v1 (reach it over the
+                        WireGuard sidecar when not on the same LAN)
+     LITELLM_API_KEY    required for /api/read
+     LITELLM_MODEL      model name as configured in LiteLLM (default gemma4-e4b)
+     LITELLM_TIMEOUT_MS per-attempt deadline before giving up (default 30000)
+     LITELLM_RETRIES    attempts against the model before failing (default 2)
      STATS_FILE         where usage metrics persist (default ./.stats.json)
      CONTRIB_DIR        where opted-in card photos + reader output are kept for
                         quality review (default: a "contrib" dir next to
@@ -40,33 +41,17 @@ import { layout, readCard } from "./lib.mjs";
 const ROOT = fileURLToPath(new URL(".", import.meta.url));
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || "0.0.0.0"; // all interfaces; set HOST=127.0.0.1 to keep it local
-const CALL_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS || 15000);
+const CALL_TIMEOUT_MS = Number(process.env.LITELLM_TIMEOUT_MS || 30000);
 const STATS_FILE = process.env.STATS_FILE || join(ROOT, ".stats.json");
 const CONTRIB_DIR =
   process.env.CONTRIB_DIR ?? join(dirname(STATS_FILE), "contrib");
 const CONTRIB_MAX = Number(process.env.CONTRIB_MAX || 3000);
 const CONTRIB_TOKEN = process.env.CONTRIB_TOKEN || ""; // gate /contrib; blank = loopback only
-const API_KEY = process.env.GEMINI_API_KEY || "";
-const MODELS = (
-  process.env.GEMINI_MODEL ||
-  [
-    "gemini-3.5-flash-lite",
-    "gemini-flash-lite-latest",
-    "gemini-3.5-flash",
-    "gemini-3.6-flash",
-    "gemini-3.7-flash",
-    "gemini-flash-latest",
-  ].join(",")
-)
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
+const LITELLM_BASE_URL = (process.env.LITELLM_BASE_URL || "http://litellm:4000/v1").replace(/\/+$/, "");
+const API_KEY = process.env.LITELLM_API_KEY || "";
+const MODEL = process.env.LITELLM_MODEL || "gemma4-e4b";
+const RETRY_ATTEMPTS = Number(process.env.LITELLM_RETRIES || 2);
 const MAX_BODY = 8 * 1024 * 1024;
-const SAMPLE_MODELS = (process.env.GEMINI_SAMPLE_MODEL ||
-  "gemini-3.5-flash-lite,gemini-flash-lite-latest")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
 
 const IMAGE_TYPES = new Set([
   "image/jpeg",
@@ -153,22 +138,10 @@ export function misreadKey(was, now) {
   return null;
 }
 
-export function isQuotaError(status, body) {
-  if (status === 429) return true;
-  return !!(body && body.error && body.error.status === "RESOURCE_EXHAUSTED");
-}
-
-/* Worth trying the next model: out of quota, momentarily overloaded, too slow,
-   or retired (404). Only a "this request is bad" error (400, 403) stops the
-   cascade. */
-export function shouldFallThrough(status, body) {
-  if (isQuotaError(status, body)) return true;
-  if ([500, 503, 504, 404].includes(status)) return true;
-  return !!(
-    body &&
-    body.error &&
-    ["UNAVAILABLE", "DEADLINE", "NOT_FOUND", "INTERNAL"].includes(body.error.status)
-  );
+/* Worth retrying: momentarily overloaded, or timed out. Only a "this request
+   is bad" error (4xx other than 408/429) stops the retry loop. */
+export function isRetryable(status) {
+  return status >= 500 || status === 429 || status === 408;
 }
 
 const validPunch = (p) =>
@@ -177,7 +150,7 @@ const validPunch = (p) =>
   /^\d{4}-\d{2}-\d{2}$/.test(p.date) &&
   /^\d{2}:\d{2}$/.test(p.time);
 
-export function punchesFromGeminiText(text) {
+export function punchesFromModelText(text) {
   const cleaned = String(text).replace(/```json|```/gi, "");
   const a = cleaned.indexOf("{");
   const b = cleaned.lastIndexOf("}");
@@ -201,7 +174,7 @@ export function punchesFromGeminiText(text) {
   return out;
 }
 
-/* --------------------------------- gemini -------------------------------- */
+/* ------------------------------ vision model ------------------------------ */
 
 const PROMPT = `This photo shows a paper punch time card. Rows are labeled IN and OUT, alternating down the card. Some rows carry a machine-stamped date and time (for example "31 AUG '26 PM1:35"); the rest are blank or handwritten. The stamps are faint dot-matrix print and may be light or slightly misaligned - read them anyway.
 
@@ -218,27 +191,29 @@ Rules:
 - Ignore blank rows and anything handwritten.
 - If no row is stamped, return {"punches":[]}.`;
 
-async function callGemini(model, image, mimeType) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+async function callModel(image, mimeType) {
+  const url = `${LITELLM_BASE_URL}/chat/completions`;
   try {
     const res = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-goog-api-key": API_KEY },
+      headers: {
+        "Content-Type": "application/json",
+        ...(API_KEY ? { Authorization: `Bearer ${API_KEY}` } : {}),
+      },
       signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
       body: JSON.stringify({
-        contents: [
+        model: MODEL,
+        temperature: 0,
+        max_tokens: 2048,
+        messages: [
           {
-            parts: [
-              { inline_data: { mime_type: mimeType, data: image } },
-              { text: PROMPT },
+            role: "user",
+            content: [
+              { type: "text", text: PROMPT },
+              { type: "image_url", image_url: { url: `data:${mimeType};base64,${image}` } },
             ],
           },
         ],
-        generationConfig: {
-          temperature: 0,
-          maxOutputTokens: 2048,
-          responseMimeType: "application/json",
-        },
       }),
     });
     let body = {};
@@ -249,89 +224,65 @@ async function callGemini(model, image, mimeType) {
     }
     return { status: res.status, body };
   } catch (e) {
-    // timeout / network drop - let the caller fall through to the next model
+    // timeout / network drop - retryable
     return {
       status: 504,
-      body: { error: { status: "DEADLINE", message: `${model}: ${e.name === "TimeoutError" ? "timed out" : e.message}` } },
+      body: { error: { message: e.name === "TimeoutError" ? "timed out" : e.message } },
     };
   }
 }
 
-/* The model that last answered, tried first next time so a busy leader does not
-   cost every request. In-memory only; resets on restart. */
-let preferredModel = null;
-
 async function readCardImage(image, mimeType, onEvent = () => {}, opts = {}) {
-  const pool = opts.models || MODELS;
-  const order =
-    !opts.models && preferredModel && pool.includes(preferredModel)
-      ? [preferredModel, ...pool.filter((m) => m !== preferredModel)]
-      : pool;
-
-  let lastErr = "no models configured";
-  let lastBusy = false;
-  let attempts = 0;
-  for (const model of order) {
-    attempts++;
+  let lastErr = "no response";
+  let lastRetryable = false;
+  for (let attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++) {
     const t = Date.now();
-    onEvent("try", { model });
-    const { status, body } = await callGemini(model, image, mimeType);
+    onEvent("try", { model: MODEL, attempt });
+    const { status, body } = await callModel(image, mimeType);
     const ms = Date.now() - t;
     if (!opts.noMetrics) {
-      const kind =
-        status === 200
-          ? "ok"
-          : isQuotaError(status, body)
-            ? "quota"
-            : body && body.error && body.error.status === "DEADLINE"
-              ? "timeout"
-              : shouldFallThrough(status, body)
-                ? "busy"
-                : "error";
-      recordModelCall(model, ms, kind);
+      const kind = status === 200 ? "ok" : isRetryable(status) ? "busy" : "error";
+      recordModelCall(MODEL, ms, kind);
     }
-    console.log(`  ${model} ${status} ${ms}ms`);
+    console.log(`  ${MODEL} ${status} ${ms}ms (attempt ${attempt})`);
     if (status === 200) {
-      const cand = body.candidates && body.candidates[0];
-      const text = ((cand && cand.content && cand.content.parts) || [])
-        .map((p) => p.text || "")
-        .join("");
-      const finish = cand && cand.finishReason;
-      if (!opts.models) preferredModel = model;
-      if (!opts.noMetrics) metrics.modelWins.set(model, (metrics.modelWins.get(model) || 0) + 1);
+      const choice = body.choices && body.choices[0];
+      const text = (choice && choice.message && choice.message.content) || "";
+      const finish = choice && choice.finish_reason;
+      if (!opts.noMetrics) metrics.modelWins.set(MODEL, (metrics.modelWins.get(MODEL) || 0) + 1);
       let punches = [];
       let parseErr = null;
       try {
-        punches = punchesFromGeminiText(text);
+        punches = punchesFromModelText(text);
       } catch (e) {
         parseErr = e.message;
       }
       if (!punches.length) {
         console.log(
-          `  ${model} 200 ${ms}ms but 0 punches` +
+          `  ${MODEL} 200 ${ms}ms but 0 punches` +
             (finish ? ` finish=${finish}` : "") +
             (parseErr ? ` parseErr=${parseErr}` : "") +
             ` raw=${JSON.stringify(text).slice(0, 500)}`
         );
       }
-      return { punches, model, raw: text, finish: finish || null, attempts };
+      return { punches, model: MODEL, raw: text, finish: finish || null, attempts: attempt };
     }
     lastErr = (body.error && body.error.message) || `HTTP ${status}`;
-    lastBusy = shouldFallThrough(status, body);
-    console.log(`  fell_through ${model} ${status} ${ms}ms  ${JSON.stringify(lastErr).slice(0, 200)}`);
-    onEvent("fell_through", { model, status, ms, busy: lastBusy });
-    if (!lastBusy) {
+    lastRetryable = isRetryable(status);
+    console.log(`  fell_through ${MODEL} ${status} ${ms}ms  ${JSON.stringify(lastErr).slice(0, 200)}`);
+    onEvent("fell_through", { model: MODEL, status, ms, busy: lastRetryable });
+    if (!lastRetryable) {
       const e = new Error(lastErr);
       e.upstream = true;
       throw e;
     }
-    // overloaded / slow / out of quota / retired - on to the next model
+    // overloaded / timed out - retry
   }
   const e = new Error(
-    lastBusy ? "Every model was busy or out of quota. Try again in a moment." : lastErr
+    lastRetryable ? `${MODEL} was busy after ${RETRY_ATTEMPTS} attempts. Try again in a moment.` : lastErr
   );
   e.upstream = true;
-  e.busy = lastBusy;
+  e.busy = lastRetryable;
   throw e;
 }
 
@@ -374,7 +325,7 @@ const metrics = {
   contribEditedReads: 0, // ...of those, how many had at least one row edited
   contribLabeled: 0, // contributed reads a reviewer has marked ok / bad
   misreads: new Map(), // "was->now" -> count, from reported edits
-  geminiCalls: 0,
+  modelCalls: 0,
   latency: [],
   recent: [], // last N read outcomes, 1 = non-200, for a rolling error rate
   models: new Map(), // name -> { calls, ok, fail, quota, busy, timeout, ms: [] }
@@ -400,7 +351,7 @@ const dayKey = (ts) => {
 };
 
 function recordModelCall(model, ms, kind) {
-  metrics.geminiCalls++;
+  metrics.modelCalls++;
   let m = metrics.models.get(model);
   if (!m) {
     m = { calls: 0, ok: 0, fail: 0, quota: 0, busy: 0, timeout: 0, ms: [] };
@@ -524,7 +475,7 @@ export function snapshot(now = Date.now()) {
     uptimeSec: Math.round((now - STARTED_AT) / 1000),
     firstReadAt: metrics.firstReadAt ? new Date(metrics.firstReadAt).toISOString() : null,
     lastReadAt: metrics.lastReadAt ? new Date(metrics.lastReadAt).toISOString() : null,
-    preferredModel: preferredModel || null,
+    preferredModel: MODEL,
 
     reads: { ...metrics.reads },
     cardsScanned: metrics.cards,
@@ -551,7 +502,7 @@ export function snapshot(now = Date.now()) {
       ? Number((metrics.lowConfPunches / metrics.punchesReturned).toFixed(3))
       : 0,
 
-    geminiCalls: metrics.geminiCalls,
+    modelCalls: metrics.modelCalls,
     modelFallthroughRate: metrics.reads.ok
       ? Number((metrics.fallthroughs / metrics.reads.ok).toFixed(3))
       : 0,
@@ -614,7 +565,7 @@ function serializeStats() {
     contribEditedReads: metrics.contribEditedReads,
     contribLabeled: metrics.contribLabeled,
     misreads: [...metrics.misreads.entries()],
-    geminiCalls: metrics.geminiCalls,
+    modelCalls: metrics.modelCalls,
     latency: metrics.latency,
     recent: metrics.recent,
     models: [...metrics.models.entries()],
@@ -651,7 +602,7 @@ function loadStats() {
     metrics.contribEditedReads = d.contribEditedReads || 0;
     metrics.contribLabeled = d.contribLabeled || 0;
     metrics.misreads = new Map(d.misreads || []);
-    metrics.geminiCalls = d.geminiCalls || 0;
+    metrics.modelCalls = d.modelCalls || d.geminiCalls || 0;
     metrics.latency = Array.isArray(d.latency) ? d.latency.slice(-RING) : [];
     metrics.recent = Array.isArray(d.recent) ? d.recent.slice(-RECENT) : [];
     metrics.models = new Map(
@@ -859,7 +810,7 @@ function logRead(o) {
 }
 
 async function handleRead(req, res) {
-  if (!API_KEY) return sendJson(res, 500, { error: "server is missing GEMINI_API_KEY" });
+  if (!API_KEY) return sendJson(res, 500, { error: "server is missing LITELLM_API_KEY" });
   let raw = "";
   let tooBig = false;
   for await (const chunk of req) {
@@ -903,14 +854,9 @@ async function handleRead(req, res) {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
 
-  // Sample-card reads use the cheap models only and are left out of the usage
-  // metrics so the demo doesn't skew the numbers. "Fast mode" also pins the
-  // lite pool, but counts and can be contributed like any real read.
-  const readOpts = clean.sample
-    ? { models: SAMPLE_MODELS, noMetrics: true }
-    : clean.fast
-      ? { models: SAMPLE_MODELS }
-      : {};
+  // Sample-card reads are left out of the usage metrics so the demo doesn't
+  // skew the numbers.
+  const readOpts = clean.sample ? { noMetrics: true } : {};
 
   const t0 = Date.now();
   try {
@@ -1347,7 +1293,7 @@ ${row("longest shift (min)", s.longestShiftMinutes)}
 ${row("earliest clock-in / latest clock-out", (s.earliestClockIn || "-") + " / " + (s.latestClockOut || "-"))}
 ${row("avg confidence", s.avgConfidence ?? "-")}
 ${row("low-confidence rate", s.lowConfidenceRate)}
-${row("gemini calls", s.geminiCalls)}
+${row("model calls", s.modelCalls)}
 ${row("model fallthrough rate", s.modelFallthroughRate)}
 ${row("error rate  last20 / last100 / all", [pct(s.errorRate.last20), pct(s.errorRate.last100), pct(s.errorRate.allTime)].join(" / ") + "  (n=" + s.errorRate.window + ")")}
 ${row("shared samples kept", s.contributedSamples)}
@@ -1468,7 +1414,7 @@ export const server = createServer((req, res) => {
 
 if (argv[1] && argv[1] === import.meta.filename) {
   server.listen(PORT, HOST, () => {
-    console.log(`punchcard on ${HOST}:${PORT}  models: ${MODELS.join(" -> ")}`);
+    console.log(`punchcard on ${HOST}:${PORT}  model: ${MODEL}`);
   });
   for (const sig of ["SIGTERM", "SIGINT"]) {
     process.on(sig, () => {

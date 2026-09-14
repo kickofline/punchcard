@@ -17,8 +17,9 @@ a misread is a quick fix.
   guidance, and perspective-corrects the shot when you tap the shutter.
   Also unit-tested.
 - **`server.mjs`** — a zero-dependency Node server that serves the static app
-  **and** exposes `POST /api/read`, which relays the photo to the Google Gemini
-  vision API. The API key lives only on the server, never in the browser.
+  **and** exposes `POST /api/read`, which relays the photo to a self-hosted
+  Gemma 4 vision model behind a LiteLLM proxy. The API key lives only on the
+  server, never in the browser.
   Also serves `GET /healthz` and `GET /stats` (JSON, or `?html=1` for a page)
   with usage metrics — read counts, rolling error rate, per-model
   latency / quota / busy counts, which model actually got each read,
@@ -32,12 +33,14 @@ a misread is a quick fix.
 ## Run locally
 
 ```
-cp .env.example .env      # then put your Gemini key in it
+cp .env.example .env      # then set LITELLM_BASE_URL / LITELLM_API_KEY
 node --env-file=.env server.mjs
 # open http://localhost:3000
 ```
 
-Get a key from https://aistudio.google.com/apikey.
+`LITELLM_BASE_URL` needs to reach a LiteLLM proxy routing to a vision-capable
+model (`gemma4-e4b` by default) — see `docker-compose.yml` for running this
+alongside a WireGuard sidecar when the LiteLLM host isn't on the same network.
 
 Run the tests:
 
@@ -49,37 +52,37 @@ node --test
 
 | Env var | Default | Notes |
 | --- | --- | --- |
-| `GEMINI_API_KEY` | — | required for `/api/read` |
-| `GEMINI_MODEL` | `gemini-3.5-flash-lite,gemini-flash-lite-latest,gemini-3.5-flash,gemini-3.6-flash,gemini-3.7-flash,gemini-flash-latest` | comma list; the next model is tried when the one before is out of quota, overloaded, missing, or slow |
-| `GEMINI_TIMEOUT_MS` | `15000` | per-model deadline; a model that hasn't answered by then is abandoned for the next one |
+| `LITELLM_BASE_URL` | `http://litellm:4000/v1` | required for `/api/read`; LiteLLM's OpenAI-compatible base URL |
+| `LITELLM_API_KEY` | — | required for `/api/read` |
+| `LITELLM_MODEL` | `gemma4-e4b` | model name as configured in LiteLLM |
+| `LITELLM_TIMEOUT_MS` | `30000` | per-attempt deadline before giving up |
+| `LITELLM_RETRIES` | `2` | attempts against the model before failing |
 | `STATS_FILE` | `./.stats.json` | where `/stats` metrics persist; point at a mounted volume to survive redeploys |
 | `CONTRIB_DIR` | `contrib` next to `STATS_FILE` | where opted-in card photos + reader output are kept for quality review; set empty to disable |
 | `CONTRIB_MAX` | `3000` | cap on stored samples; oldest deleted first |
 | `PORT` | `3000` | Coolify sets this automatically |
 | `HOST` | `0.0.0.0` | binds all interfaces (reachable from other devices on the LAN); set `127.0.0.1` for local-only |
 
-The default leads with the `-lite` models: `/stats` on the live app showed
-them both faster (p50 ~1.4s vs. the heavier models timing out at the full
-`GEMINI_TIMEOUT_MS` window with a 0% quota-error rate — they just weren't
-answering in time) and more reliable, so they front the cascade now. The
-full-size Flash models still follow as a fallback in case a lite model is
-down or a card needs the extra strength. Each model gets one
-`GEMINI_TIMEOUT_MS` window before the server moves on.
+The model is a single self-hosted deployment (no per-request quota), so
+`readCardImage` just retries `LITELLM_RETRIES` times against transient
+failures (5xx / timeout) rather than falling through a model list.
 
 ## Deploy (Coolify)
 
-Deploy as a **Nixpacks** app (not a static site):
+Deploy via `docker-compose.yml`, which runs the app alongside a WireGuard
+sidecar so it can reach the LiteLLM host over the VPN regardless of where
+Coolify places the container:
 
-- Nixpacks auto-detects Node from `package.json` and runs `npm start`
-  (`node server.mjs`).
-- Set `GEMINI_API_KEY` (and optionally `GEMINI_MODEL`) as environment variables.
+- Set `LITELLM_API_KEY` as an environment variable (and `LITELLM_BASE_URL` if
+  the LiteLLM host's address differs from the default).
+- The sidecar needs its own WireGuard peer config — see `wg/README.md`.
 - The app listens on `PORT`, which Coolify provides.
 
 ## Notes / limits
 
-- Free-tier Gemini has a **daily request cap**. When the primary model is
-  exhausted the server falls through to the lite model; when both are gone,
-  `/api/read` returns an error and manual row entry is the fallback.
+- The vision model runs on shared self-hosted GPUs — under load a read may
+  need a retry or two; `/api/read` returns an error if all `LITELLM_RETRIES`
+  attempts fail, and manual row entry is the fallback.
 - Vision accuracy is good but not perfect on glare / skew / low-res photos.
   Every row is tap-to-edit and punches can be entered by hand.
 - The reader only reads printed machine stamps; handwriting and blank rows are

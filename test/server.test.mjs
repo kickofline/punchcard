@@ -2,9 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  punchesFromGeminiText,
-  isQuotaError,
-  shouldFallThrough,
+  punchesFromModelText,
+  isRetryable,
   validateReadBody,
   staticTarget,
   percentile,
@@ -50,7 +49,7 @@ test("snapshot returns the expected shape on a fresh server", () => {
     "hoursClocked",
     "shiftsRead",
     "avgConfidence",
-    "geminiCalls",
+    "modelCalls",
     "dataProcessedMB",
     "byHour",
     "byWeekday",
@@ -162,10 +161,10 @@ test("staticTarget refuses path traversal", () => {
   assert.equal(staticTarget("/..%2fserver.mjs"), null);
 });
 
-/* --------------------------- punchesFromGeminiText -------------------------- */
+/* --------------------------- punchesFromModelText -------------------------- */
 
-test("punchesFromGeminiText parses a bare JSON object and pads the hour", () => {
-  const out = punchesFromGeminiText(
+test("punchesFromModelText parses a bare JSON object and pads the hour", () => {
+  const out = punchesFromModelText(
     '{"punches":[{"type":"IN","date":"2026-09-02","time":"7:58"}]}'
   );
   assert.deepEqual(out, [
@@ -173,8 +172,8 @@ test("punchesFromGeminiText parses a bare JSON object and pads the hour", () => 
   ]);
 });
 
-test("punchesFromGeminiText strips ```json fences and uppercases the type", () => {
-  const out = punchesFromGeminiText(
+test("punchesFromModelText strips ```json fences and uppercases the type", () => {
+  const out = punchesFromModelText(
     '```json\n{"punches":[{"type":"out","date":"2026-09-02","time":"17:04"}]}\n```'
   );
   assert.deepEqual(out, [
@@ -182,12 +181,12 @@ test("punchesFromGeminiText strips ```json fences and uppercases the type", () =
   ]);
 });
 
-test("punchesFromGeminiText finds the object inside surrounding prose", () => {
-  assert.deepEqual(punchesFromGeminiText('Sure: {"punches":[]} done'), []);
+test("punchesFromModelText finds the object inside surrounding prose", () => {
+  assert.deepEqual(punchesFromModelText('Sure: {"punches":[]} done'), []);
 });
 
-test("punchesFromGeminiText drops entries that fail validation", () => {
-  const out = punchesFromGeminiText(
+test("punchesFromModelText drops entries that fail validation", () => {
+  const out = punchesFromModelText(
     '{"punches":[' +
       '{"type":"IN","date":"nope","time":"08:00"},' +
       '{"type":"MAYBE","date":"2026-09-02","time":"08:00"},' +
@@ -199,12 +198,12 @@ test("punchesFromGeminiText drops entries that fail validation", () => {
   ]);
 });
 
-test("punchesFromGeminiText throws when the reply has no JSON object", () => {
-  assert.throws(() => punchesFromGeminiText("I could not read the card"), /no json/i);
+test("punchesFromModelText throws when the reply has no JSON object", () => {
+  assert.throws(() => punchesFromModelText("I could not read the card"), /no json/i);
 });
 
-test("punchesFromGeminiText keeps a clamped confidence, defaulting to 1", () => {
-  const out = punchesFromGeminiText(
+test("punchesFromModelText keeps a clamped confidence, defaulting to 1", () => {
+  const out = punchesFromModelText(
     '{"punches":[' +
       '{"type":"IN","date":"2026-09-02","time":"08:00","confidence":0.4},' +
       '{"type":"OUT","date":"2026-09-02","time":"16:30","confidence":5},' +
@@ -214,29 +213,20 @@ test("punchesFromGeminiText keeps a clamped confidence, defaulting to 1", () => 
   assert.deepEqual(out.map((p) => p.confidence), [0.4, 1, 1]);
 });
 
-/* ------------------------------- isQuotaError ------------------------------ */
+/* -------------------------------- isRetryable ------------------------------ */
 
-test("isQuotaError is true for HTTP 429", () => {
-  assert.equal(isQuotaError(429, {}), true);
+test("isRetryable is true for 5xx, 429, and 408", () => {
+  assert.equal(isRetryable(500), true);
+  assert.equal(isRetryable(503), true);
+  assert.equal(isRetryable(429), true);
+  assert.equal(isRetryable(408), true);
 });
 
-test("isQuotaError is true for a RESOURCE_EXHAUSTED status in the body", () => {
-  assert.equal(isQuotaError(400, { error: { status: "RESOURCE_EXHAUSTED" } }), true);
-});
-
-test("isQuotaError is false for other failures", () => {
-  assert.equal(isQuotaError(500, { error: { status: "INTERNAL" } }), false);
-  assert.equal(isQuotaError(200, {}), false);
-});
-
-test("shouldFallThrough covers quota, overload, slowness and retired models", () => {
-  assert.equal(shouldFallThrough(429, {}), true);
-  assert.equal(shouldFallThrough(503, {}), true);
-  assert.equal(shouldFallThrough(504, { error: { status: "DEADLINE" } }), true);
-  assert.equal(shouldFallThrough(404, { error: { status: "NOT_FOUND" } }), true);
-  assert.equal(shouldFallThrough(400, { error: { status: "UNAVAILABLE" } }), true);
-  assert.equal(shouldFallThrough(400, { error: { status: "INVALID_ARGUMENT" } }), false);
-  assert.equal(shouldFallThrough(403, { error: { status: "PERMISSION_DENIED" } }), false);
+test("isRetryable is false for other client errors", () => {
+  assert.equal(isRetryable(400), false);
+  assert.equal(isRetryable(403), false);
+  assert.equal(isRetryable(404), false);
+  assert.equal(isRetryable(200), false);
 });
 
 /* ------------------------------ validateReadBody ------------------------- */
