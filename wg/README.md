@@ -1,20 +1,28 @@
-# WireGuard tunnel
+# WireGuard sidecar
 
 `/api/read` needs to reach LiteLLM on skynet's LAN (`10.1.0.155:4000`), which
-isn't public. The app image bundles WireGuard itself (`docker-entrypoint.sh`
-+ `wireguard-go`) rather than running it as a separate sidecar container —
-Coolify's host didn't allow the `SYS_MODULE` capability a sidecar container
-needed to load the kernel WireGuard module.
+isn't public. A separate `wg` service (`lscr.io/linuxserver/wireguard`) brings
+up the kernel WireGuard tunnel; the `app` service joins it via
+`network_mode: "service:wg"` in `docker-compose.yml`, so all of `app`'s
+traffic (including its outbound calls to LiteLLM) is routed through the
+tunnel automatically.
 
-Userspace mode avoids that: `wg-quick` automatically falls back to the
-bundled `wireguard-go` binary when the kernel module isn't available, so the
-container only needs `NET_ADMIN` + access to `/dev/net/tun` (both set in
-`docker-compose.yml`) — no `SYS_MODULE`, no separate container.
+An earlier attempt embedded a userspace tunnel (`wireguard-go`) directly in
+the app image to avoid needing `SYS_MODULE`, on the theory that Coolify
+wouldn't grant it to a sidecar. That theory was wrong — the actual problem
+was that punchcard's Coolify resource was set to build with **Nixpacks**
+instead of **Docker Compose**, which silently ignored `cap_add`/`devices`/the
+whole compose file and ran `npm run start` on an auto-generated image with no
+WireGuard tooling at all. Once the build pack is set to Docker Compose,
+`cap_add: [NET_ADMIN, SYS_MODULE]` is honored normally, so the plain kernel
+sidecar works and is simpler than building `wireguard-go` from source.
 
-`docker-entrypoint.sh` writes `/etc/wireguard/wg0.conf` from the `WG_*`
-environment variables in `.env` and brings the tunnel up before starting the
-Node server, so the whole thing is settable as Coolify secrets — no config
-file to upload.
+`wg/init-wg-conf.sh` runs via linuxserver's `/custom-cont-init.d/` hook and
+writes `/config/wg_confs/wg0.conf` from the `WG_*` environment variables
+before the image's own init brings the tunnel up — so, same as before, the
+whole thing is settable as Coolify secrets with no config file to upload
+(the script itself is static and lives in the repo; only its inputs are
+secret).
 
 ## Getting a peer config
 
@@ -48,11 +56,12 @@ Delete the local `sidecar_*.key` files once they're in `.env` — nothing on
 disk needs them after that.
 
 **Verifying it connected**: `sudo wg show` on skynet should show a
-`latest handshake` line for this peer within a minute or two of the
-container starting. No handshake ever appearing means the container isn't
-starting, `wg-quick up wg0` is failing (check the app container's logs, not
-a separate `wg` container — there isn't one anymore), or UDP 51820 is
-blocked outbound from wherever this is hosted.
+`latest handshake` line for this peer within a minute or two of the `wg`
+container starting. No handshake ever appearing means:
+- the Coolify resource isn't actually building via Docker Compose (check the
+  build pack setting first — this was the root cause once already),
+- `wg` container logs show `init-wg-conf.sh` failing (missing env var),
+- or UDP 51820 is blocked outbound from wherever this is hosted.
 
 A redeploy that needs a fresh peer (e.g. rotating a leaked key) should
 generate a **new** keypair, add it as a new peer, then remove the old

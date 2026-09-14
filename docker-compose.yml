@@ -1,15 +1,30 @@
 services:
+  wg:
+    image: lscr.io/linuxserver/wireguard:latest
+    container_name: punchcard-wg
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+    env_file: .env
+    volumes:
+      - ./wg/init-wg-conf.sh:/custom-cont-init.d/init-wg-conf.sh:ro
+      - /lib/modules:/lib/modules:ro
+    restart: unless-stopped
+
   app:
     build: .
     container_name: punchcard
     restart: unless-stopped
-    cap_add:
-      - NET_ADMIN
-    devices:
-      - /dev/net/tun
+    network_mode: "service:wg"
+    depends_on:
+      - wg
     env_file: .env
-    ports:
-      - "3000:3000"
     volumes:
       - punchcard_data:/app/data
     environment:
