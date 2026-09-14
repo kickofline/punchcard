@@ -1,7 +1,24 @@
 services:
+  app:
+    build: .
+    container_name: punchcard
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file: .env
+    volumes:
+      - punchcard_data:/app/data
+    environment:
+      - STATS_FILE=/app/data/.stats.json
+      - CONTRIB_DIR=/app/data/contrib
+
   wg:
     build: ./wg
     container_name: punchcard-wg
+    restart: unless-stopped
+    network_mode: "service:app"
+    depends_on:
+      - app
     cap_add:
       - NET_ADMIN
       - SYS_MODULE
@@ -14,23 +31,6 @@ services:
     env_file: .env
     volumes:
       - /lib/modules:/lib/modules:ro
-    ports:
-      - "3001:3000"
-    restart: unless-stopped
-
-  app:
-    build: .
-    container_name: punchcard
-    restart: unless-stopped
-    network_mode: "service:wg"
-    depends_on:
-      - wg
-    env_file: .env
-    volumes:
-      - punchcard_data:/app/data
-    environment:
-      - STATS_FILE=/app/data/.stats.json
-      - CONTRIB_DIR=/app/data/contrib
 
 volumes:
   punchcard_data:

@@ -1,11 +1,16 @@
 # WireGuard sidecar
 
 `/api/read` needs to reach LiteLLM on skynet's LAN (`10.1.0.155:4000`), which
-isn't public. A separate `wg` service (`lscr.io/linuxserver/wireguard`) brings
-up the kernel WireGuard tunnel; the `app` service joins it via
-`network_mode: "service:wg"` in `docker-compose.yml`, so all of `app`'s
-traffic (including its outbound calls to LiteLLM) is routed through the
-tunnel automatically.
+isn't public. A separate `wg` service (built on `lscr.io/linuxserver/wireguard`) brings up
+the kernel WireGuard tunnel *inside `app`'s network namespace* —
+`network_mode: "service:app"` on `wg` in `docker-compose.yml` — so all of
+`app`'s traffic (including its outbound calls to LiteLLM) is routed through
+the tunnel automatically. `app` stays the network-owning container (keeps
+its own published port, and is what Coolify's proxy routes to); `wg` is
+purely along for the ride to bring the interface up. This was originally the
+other way around (`app` joining `wg`'s namespace) which broke Coolify's
+proxying — `app` had no network identity of its own for Traefik to route
+to, causing 503s even once the tunnel itself was up.
 
 An earlier attempt embedded a userspace tunnel (`wireguard-go`) directly in
 the app image to avoid needing `SYS_MODULE`, on the theory that Coolify
