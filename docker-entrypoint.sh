@@ -13,7 +13,7 @@ cat > /etc/wireguard/wg0.conf <<EOF
 [Interface]
 PrivateKey = ${WG_PRIVATE_KEY}
 Address = ${WG_ADDRESS}
-DNS = ${WG_DNS:-1.1.1.1}
+${WG_DNS:+DNS = ${WG_DNS}}
 
 [Peer]
 PublicKey = ${WG_SERVER_PUBKEY}
