@@ -4,7 +4,7 @@ services:
     container_name: punchcard
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "3001:3000"
     env_file: .env
     volumes:
       - punchcard_data:/app/data
