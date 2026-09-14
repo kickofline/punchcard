@@ -39,8 +39,9 @@ node --env-file=.env server.mjs
 ```
 
 `LITELLM_BASE_URL` needs to reach a LiteLLM proxy routing to a vision-capable
-model (`gemma4-e4b` by default) — see `docker-compose.yml` for running this
-alongside a WireGuard sidecar when the LiteLLM host isn't on the same network.
+model (`gemma4-e4b` by default). The app bundles its own WireGuard tunnel
+(see `wg/README.md`) to reach it when the LiteLLM host isn't on the same
+network — `docker-compose.yml` runs it with the capabilities that needs.
 
 Run the tests:
 
@@ -52,7 +53,7 @@ node --test
 
 | Env var | Default | Notes |
 | --- | --- | --- |
-| `LITELLM_BASE_URL` | `http://litellm:4000/v1` | required for `/api/read`; LiteLLM's OpenAI-compatible base URL |
+| `LITELLM_BASE_URL` | `http://10.1.0.155:4000/v1` | required for `/api/read`; LiteLLM's OpenAI-compatible base URL |
 | `LITELLM_API_KEY` | — | required for `/api/read` |
 | `LITELLM_MODEL` | `gemma4-e4b` | model name as configured in LiteLLM |
 | `LITELLM_TIMEOUT_MS` | `30000` | per-attempt deadline before giving up |
@@ -69,13 +70,13 @@ failures (5xx / timeout) rather than falling through a model list.
 
 ## Deploy (Coolify)
 
-Deploy via `docker-compose.yml`, which runs the app alongside a WireGuard
-sidecar so it can reach the LiteLLM host over the VPN regardless of where
-Coolify places the container:
+Deploy via `docker-compose.yml`. The image brings its own WireGuard tunnel
+up at startup (no separate sidecar container — see `wg/README.md` for why)
+so it can reach the LiteLLM host over the VPN regardless of where Coolify
+places the container:
 
-- Set `LITELLM_API_KEY` as an environment variable (and `LITELLM_BASE_URL` if
-  the LiteLLM host's address differs from the default).
-- The sidecar needs its own WireGuard peer config — see `wg/README.md`.
+- Set `LITELLM_API_KEY` and the `WG_*` variables as environment variables
+  (see `.env.example`) — `wg/README.md` covers getting a peer config.
 - The app listens on `PORT`, which Coolify provides.
 
 ## Notes / limits

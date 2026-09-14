@@ -1,27 +1,15 @@
 services:
-  wg:
-    image: lscr.io/linuxserver/wireguard:1.0.20260223-r0-ls120
-    container_name: punchcard-wg
-    cap_add:
-      - NET_ADMIN
-      - SYS_MODULE
-    sysctls:
-      - net.ipv4.conf.all.src_valid_mark=1
-    volumes:
-      - ./wg/init-wg-conf.sh:/custom-cont-init.d/10-write-wg-conf.sh:ro
-    env_file: .env
-    ports:
-      - "3000:3000" # published here, not on `app` — it shares this network namespace
-    restart: unless-stopped
-
   app:
     build: .
     container_name: punchcard
     restart: unless-stopped
-    network_mode: "service:wg"
-    depends_on:
-      - wg
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
     env_file: .env
+    ports:
+      - "3000:3000"
     volumes:
       - punchcard_data:/app/data
     environment:

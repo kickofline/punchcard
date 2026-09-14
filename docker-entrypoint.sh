@@ -1,6 +1,8 @@
-#!/usr/bin/with-contenv bash
-# Writes /config/wg_confs/wg0.conf from env vars before the WireGuard service
-# starts (linuxserver images run anything in /custom-cont-init.d/ first).
+#!/bin/bash
+# Writes /etc/wireguard/wg0.conf from WG_* env vars, brings the tunnel up
+# (falling back to userspace wireguard-go automatically if the kernel module
+# isn't available — wg-quick does this on its own when it finds a
+# wireguard-go binary in PATH), then execs the real command.
 set -euo pipefail
 
 : "${WG_PRIVATE_KEY:?WG_PRIVATE_KEY is required}"
@@ -10,8 +12,8 @@ set -euo pipefail
 : "${WG_ENDPOINT:?WG_ENDPOINT is required}"
 : "${WG_ALLOWED_IPS:?WG_ALLOWED_IPS is required}"
 
-mkdir -p /config/wg_confs
-cat > /config/wg_confs/wg0.conf <<EOF
+mkdir -p /etc/wireguard
+cat > /etc/wireguard/wg0.conf <<EOF
 [Interface]
 PrivateKey = ${WG_PRIVATE_KEY}
 Address = ${WG_ADDRESS}
@@ -24,4 +26,8 @@ Endpoint = ${WG_ENDPOINT}
 AllowedIPs = ${WG_ALLOWED_IPS}
 PersistentKeepalive = ${WG_KEEPALIVE:-25}
 EOF
-chmod 600 /config/wg_confs/wg0.conf
+chmod 600 /etc/wireguard/wg0.conf
+
+wg-quick up wg0
+
+exec "$@"

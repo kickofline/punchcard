@@ -1,19 +1,24 @@
-# WireGuard sidecar
+# WireGuard tunnel
 
-`docker-compose.yml` runs punchcard's `app` container sharing the network
-namespace of a `wg` (WireGuard client) container, so `/api/read` can reach
-LiteLLM on skynet's LAN (`10.1.0.155:4000`) regardless of where Coolify
-places the deployment.
+`/api/read` needs to reach LiteLLM on skynet's LAN (`10.1.0.155:4000`), which
+isn't public. The app image bundles WireGuard itself (`docker-entrypoint.sh`
++ `wireguard-go`) rather than running it as a separate sidecar container —
+Coolify's host didn't allow the `SYS_MODULE` capability a sidecar container
+needed to load the kernel WireGuard module.
 
-The tunnel config isn't a mounted file — `init-wg-conf.sh` (mounted into
-`/custom-cont-init.d/`, which linuxserver images run automatically before
-the WireGuard service starts) writes `/config/wg_confs/wg0.conf` from the
-`WG_*` environment variables in `.env`. That makes the whole thing settable
-as Coolify secrets, no file upload needed.
+Userspace mode avoids that: `wg-quick` automatically falls back to the
+bundled `wireguard-go` binary when the kernel module isn't available, so the
+container only needs `NET_ADMIN` + access to `/dev/net/tun` (both set in
+`docker-compose.yml`) — no `SYS_MODULE`, no separate container.
+
+`docker-entrypoint.sh` writes `/etc/wireguard/wg0.conf` from the `WG_*`
+environment variables in `.env` and brings the tunnel up before starting the
+Node server, so the whole thing is settable as Coolify secrets — no config
+file to upload.
 
 ## Getting a peer config
 
-On skynet, a new peer for this sidecar is added directly to `/etc/wireguard/wg0.conf`
+On skynet, a new peer is added directly to `/etc/wireguard/wg0.conf`
 (no wg-easy — plain `wg-quick`):
 
 ```
@@ -41,6 +46,13 @@ Set in `.env` (see `.env.example` for the full list):
 
 Delete the local `sidecar_*.key` files once they're in `.env` — nothing on
 disk needs them after that.
+
+**Verifying it connected**: `sudo wg show` on skynet should show a
+`latest handshake` line for this peer within a minute or two of the
+container starting. No handshake ever appearing means the container isn't
+starting, `wg-quick up wg0` is failing (check the app container's logs, not
+a separate `wg` container — there isn't one anymore), or UDP 51820 is
+blocked outbound from wherever this is hosted.
 
 A redeploy that needs a fresh peer (e.g. rotating a leaked key) should
 generate a **new** keypair, add it as a new peer, then remove the old
